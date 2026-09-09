@@ -33,8 +33,8 @@ npca: 20                                # number of PCA components
 output_dir: random_samples
 train_flux_filename: train/train_spectra_Ndat.npz
 train_filename: train/train_x_coef_mfrac_Ndat.npz
-valid_filename: valid/valid_x_coef_mfrac_Ndat.npz
-test_filename: test/test_x_coef_mfrac_Ndat.npz
+valid_filename: valid/valid_x_coef_mfrac_flux_Ndat.npz
+test_filename: test/test_x_coef_mfrac_flux_Ndat.npz
 pca_filename: pca/log10_flux_pca_modes_Ndat.npz
 
 # ============================================
