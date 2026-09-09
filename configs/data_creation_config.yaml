@@ -1,0 +1,117 @@
+# configi file for data_creation.py
+
+# ============================================
+# General settings
+# ============================================
+
+sfh_type: continuity_sfh              # continuity_sfh or parametric_sfh
+wl_min: 0.2                           # wavelength grid range in micron
+wl_max: 5.5
+
+# ============================================
+# nsamples and seeds
+# ============================================
+
+ntrain: 100000
+nvalid: 10000
+ntest: 10000
+
+seed_train: 123
+seed_valid: 456
+seed_test: 789
+
+# ============================================
+# PCA modes
+# ============================================
+
+npca: 20                                # number of PCA components
+
+# ============================================
+# target file names and location
+# "Ndat" will be replaced by {n/1000}k if in the provided filename
+# ============================================
+output_dir: random_samples
+train_flux_filename: train/train_spectra_Ndat.npz
+train_filename: train/train_x_coef_mfrac_Ndat.npz
+valid_filename: valid/valid_x_coef_mfrac_Ndat.npz
+test_filename: test/test_x_coef_mfrac_Ndat.npz
+pca_filename: pca/log10_flux_pca_modes_Ndat.npz
+
+# ============================================
+# Emulator parameters
+#
+# For continuity SFH:
+# use nbin - 1 logsfr_ratios parameters
+# ============================================
+train_param_keys:
+  - zred
+  - logmass
+  - logzsol
+  - logsfr_ratios0
+  - logsfr_ratios1
+  - logsfr_ratios2
+  - logsfr_ratios3
+  # - logsfr_ratios4
+  # - logsfr_ratios5
+  # - logsfr_ratios6
+  # - logsfr_ratios7
+  # - logsfr_ratios8
+  - dust2
+  - dust_index
+  - duste_qpah
+
+
+# ============================================
+# Priors
+#
+# Available distributions:
+# uniform
+# loguniform
+# loguniform1p
+# student_t
+# truncnorm
+# ============================================
+prior_dicts:
+
+  zred:
+    bounds: [0.0, 3.0]
+    prior:
+      dist: loguniform1p
+
+  logmass:
+    bounds: [7.5, 13.5]
+    prior:
+      dist: uniform
+
+  logzsol:
+    bounds: [-2.0, 0.2]
+    prior:
+      dist: uniform
+
+  logsfr_ratios:
+    bounds: [-5.0, 5.0]
+    prior:
+      dist: student_t
+      df: 2
+      loc: 0.0
+      scale: 3.0
+
+  dust2:
+    bounds: [0.0, 4.0]
+    prior:
+      dist: truncnorm
+      loc: 0.3
+      scale: 3.0
+
+  dust_index:
+    bounds: [-1.2, 0.4]
+    prior:
+      dist: uniform
+
+  duste_qpah:
+    bounds: [0.0, 7.0]
+    prior:
+      dist: truncnorm
+      loc: 2.0
+      scale: 4.0
+

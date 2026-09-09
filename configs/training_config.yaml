@@ -1,0 +1,65 @@
+Data:
+  train_data: random_samples/train/train_x_coef_mfrac_100k.npz
+  validation_split: 0.1                 # this will be ignored if validation_data is not empty
+  validation_split_seed: 42
+  validation_data: random_samples/validation/validation_x_coef_mfrac_flux_10k.npz
+  test_data: random_samples/test/test_x_coef_mfrac_flux_10k.npz
+  pca_file: random_samples/pca/logflux_pca_modes_100k.npz
+
+Device: auto
+
+Scaler:
+  coef_scaling: none                    # none, standard, coef0, use_coef0 (coef0 and use_coef0 are the same)
+  mfrac_scaling: standard               # none, standard, match_coef0
+
+DataLoader:
+  train_batch_size: 500
+  validation_batch_size: 500
+  train_num_workers: 4
+  # train_persistent_workers: 2
+  train_shuffle: True
+  validation_shuffle: True
+
+  test_batch_size: 2000
+  test_num_workers: 2
+  # test_persistent_workers: 2
+  test_shuffle: True
+
+Emulator:
+  shared_dims: [512, 512, 512, 512]
+  coef_head_dims: 
+  mfrac_head_dims: 
+  activation: gelu                      # gelu, relu, silu, elu, tanh, leaky_relu
+  dropout: 0.0
+  predict_mfrac: True
+
+Loss:
+  coef_loss: mae                        # mse, rmse, mae, logflux_mse, logflux_mae, flux_mse, flux_mae, relative_flux_mse, relative_flux_mae
+  mfrac_loss: mse                       # mse, rmse, mae
+  mfrac_lambda: 0.01
+  relative_flux_eps: 1.0E-8
+  rmse_eps: 1.0E-12
+  max_log10_flux:
+  wavelength_weights:
+
+Optimizer:
+  name: adam                            # adam, adamw, sgd, rmsprop
+  learning_rate: 1.0E-3
+  weight_decay: 0.0
+
+Training:
+  # device: auto
+  max_epochs: 800
+  patience: 50
+  abs_tol: 0.0
+  rel_tol: 0.001
+  monitor: total                        # total, coef, mfrac
+  verbose: True
+
+Outputs:
+  outputs_dir: emulator_outputs
+  save_plots: True
+  # plot_dir: 
+  save_emulator: True
+  # emulator_dir: 
+  emulator_filename: emulator.pt

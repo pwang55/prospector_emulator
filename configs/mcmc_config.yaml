@@ -1,0 +1,92 @@
+# Configure file for prospector_mcmc.py
+Catalog:
+  filename: data/hotdog_l4_specz_collate_gals.parq
+  SPHERExRefID: 1663027938116763658
+  filter_list: /Users/brianwang76/SPHEREx/SPHEREx-L4-Redshift-Pipeline/redshifts/data/FILTER/SPHEREx_306/fiducial_filters.txt
+
+MCMC_settings:
+  nwalkers: 32
+  jitter: 1.0E-4
+  nsteps: 3000
+  discard: 1000
+  thin: 10
+  zprior: True
+  parallel: False
+  save_sampler: False
+  sampler_filename: use_id    # specific text filename, or 'use_id' to save as pros_mcmc_{SPHERExRefID}.h5
+  save_plots: True
+  plots_dir: mcmc_outputs
+  verbose: True
+  output_dir: mcmc_outputs
+  output_filename: use_id     # filename without extension, for both report (.yaml) and mcmc results (.npz) 
+
+
+
+# ============================================
+# Priors
+#
+# Available distributions:
+# uniform
+# loguniform
+# loguniform1p
+# student_t (df, loc, scale)
+# truncnorm (loc, scale)
+
+# noted!! bounds will be override by trained emulator bounds if trained bounds are smaller
+# not all parameters defined here will be used; only ones that appear in emulator will
+# ============================================
+prior_dicts:
+  # will be override by a gaussian zprior if it is set to true
+  zred:
+    init: 0.1
+    bounds: [0.0, 3.0]
+    prior:
+      dist: loguniform1p
+
+  logmass:
+    init: 10.0
+    bounds: [7.5, 13.5]
+    prior:
+      dist: uniform
+
+  logzsol:
+    init: 0.0
+    bounds: [-2.0, 0.2]
+    prior:
+      dist: uniform
+
+  logsfr_ratios:
+    init: 0.0
+    bounds: [-5.0, 5.0]
+    prior:
+      dist: student_t
+      df: 2
+      loc: 0.0
+      scale: 3.0
+
+  dust2:
+    init: 0.3
+    bounds: [0.0, 4.0]
+    prior:
+      dist: truncnorm
+      loc: 0.3
+      scale: 3.0
+
+  dust_index:
+    init: -1.0
+    bounds: [-1.2, 0.4]
+    prior:
+      dist: uniform
+
+  duste_qpah:
+    init: 2.0
+    bounds: [0.0, 7.0]
+    prior:
+      dist: truncnorm
+      loc: 2.0
+      scale: 4.0
+
+# other parameters to be added
+
+
+
