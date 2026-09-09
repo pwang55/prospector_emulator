@@ -126,15 +126,15 @@ def t_logpdf_cutoffs(val, low=-5, high=5, df=2, loc=0, scale=0.3):
     return t.logpdf(val, df=df, loc=loc, scale=scale) + uniform_logpdf(val, low=low, high=high)
 
 
-def loguniform1p_logpdf(x, low, high):
-    if x < low or x > high:
+def loguniform1p_logpdf(val, low, high):
+    if val < low or val > high:
         return -np.inf
     if low <= -1:
         raise ValueError(
             "loguniform1p requires low > -1"
         )
     log_range = np.log1p(high) - np.log1p(low)
-    return -np.log1p(x) - np.log(log_range)
+    return -np.log1p(val) - np.log(log_range)
 
 
 

@@ -741,6 +741,7 @@ def main():
     mfrac_train = train_data["mfrac"]
     train_param_keys = train_data['train_param_keys']
     default_params = train_data["default_params"]
+    prior_dicts = train_data["prior_dicts"]
 
     if config["Data"]["validation_data"] is not None:
         # x_validation, coef_validation, mfrac_validation, _ = load_data(config["Data"]["validation_data"])
@@ -1051,6 +1052,7 @@ def main():
 
         "train_param_keys": train_param_keys,
         "default_params": default_params,
+        "prior_dicts": prior_dicts
     }
 
     checkpoint_dir = Path(config["Outputs"]["outputs_dir"])
