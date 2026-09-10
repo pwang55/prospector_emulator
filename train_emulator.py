@@ -1059,7 +1059,7 @@ def main():
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     torch.save(checkpoint, checkpoint_dir / config["Outputs"]["emulator_filename"])
     if verbose:
-        print(f"Trained emulator saved: {checkpoint_dir / config["Outputs"]["emulator_filename"]}")
+        print(f"Trained emulator saved: {checkpoint_dir / config['Outputs']['emulator_filename']}")
 
 
     # time one iteration with the emulator
