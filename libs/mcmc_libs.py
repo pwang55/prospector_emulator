@@ -338,3 +338,107 @@ def display_fits(theta_percentiles, ylabels=None):
 # Main emulator_mcmc class
 # ===========================================
 
+class emulator_mcmc:
+    """
+
+    """
+
+    # ---------------------------------------------------------
+    # Built-in defaults
+    # ---------------------------------------------------------
+
+    # default config is for user building their own mcmc routine without a config file, 
+    # so there are no catalog, filter, emulator in the defaults (user has to specify it)
+    default_configs = {
+        "MCMC_settings": {
+            "nwalkers": 32,
+            "jitter": 1.0e-4,
+            "nsteps": 20000,
+            "discard": 5000,
+            "thin": 20,
+            "zprior": True,
+            "parallel": False,
+            "verbose": True
+            },
+
+        "Outputs": {
+            "save_sampler": False,
+            "sampler_filename": "use_id",
+            "output_dir": "mcmc_outputs",
+            "output_filename": "use_id",
+            "save_plots": False,
+            "plots_dir": "mcmc_outputs",
+        },
+        # prior_dicts should contain all possible parameter and their default range/init
+        # only the ones exist in loaded emulator will be used, and bounds will be overrided if 
+        # emulator parameters have smaller bounds
+        "prior_dicts": {
+            "zred": 
+            {
+                "init": 0.1,
+                "bounds": [0.0, 3.0],
+                "prior": {
+                    "dist": "uniform"
+                }
+            },
+            "logmass": 
+            {
+                "init": 10.0,
+                "bounds": [7.5, 13.5],
+                "prior": {
+                    "dist": "uniform"
+                }
+            },
+           "logzsol": 
+            {
+                "init": 0.0,
+                "bounds": [-2.0, 0.2],
+                "prior": {
+                    "dist": "uniform"
+                }
+            },
+           "logsfr_ratios": 
+            {
+                "init": 0.0,
+                "bounds": [-5.0, 5.0],
+                "prior": {
+                    "dist": "student_t",
+                    "df": 2,
+                    "loc": 0.0,
+                    "scale": 0.3
+                }
+            },
+           "dust2": 
+            {
+                "init": 0.3,
+                "bounds": [0.0, 4.0],
+                "prior": {
+                    "dist": "truncnorm",
+                    "loc": 0.3,
+                    "scale": 1.0
+                }
+            },
+           "dust_index": 
+            {
+                "init": -1.0,
+                "bounds": [-1.2, 0.4],
+                "prior": {
+                    "dist": "uniform",
+                }
+            },
+           "duste_qpah": 
+            {
+                "init": 2.0,
+                "bounds": [0.0, 7.0],
+                    "dist": "truncnorm",
+                    "loc": 2.0,
+                    "scale": 2.0
+                }
+            },
+            # TODO all other parameters' default
+
+        }
+
+    
+
+

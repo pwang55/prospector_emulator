@@ -19,7 +19,7 @@ To make train/valid/test data from `Prospector` (requires installing prospector,
 modify settings in `configs/data_creation.yaml`, including allowed parameters, prior settings and nsamples, then  
 
 ```
-$ python data_creation.py -c configs/data_creation.yaml
+$ python data_creation.py -c configs/data_creation_config.yaml
 ```
 
 ## Train an emulator

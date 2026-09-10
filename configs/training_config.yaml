@@ -2,9 +2,9 @@ Data:
   train_data: random_samples/train/train_x_coef_mfrac_100k.npz
   validation_split: 0.1                 # this will be ignored if validation_data is not empty
   validation_split_seed: 42
-  validation_data: random_samples/validation/validation_x_coef_mfrac_flux_10k.npz
+  validation_data: random_samples/valid/valid_x_coef_mfrac_flux_10k.npz
   test_data: random_samples/test/test_x_coef_mfrac_flux_10k.npz
-  pca_file: random_samples/pca/logflux_pca_modes_100k.npz
+  pca_file: random_samples/pca/log10_flux_pca_modes_100k.npz
 
 Device: auto
 

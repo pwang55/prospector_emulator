@@ -939,7 +939,7 @@ def load_data(filename):
     mfrac = dat["mfrac"]
     train_param_keys = dat['train_param_keys'].tolist()
     default_params = json.loads(dat["default_params"].item())
-    prior_dicts=json.load(dat["prior_dicts"].item())
+    prior_dicts=json.loads(dat["prior_dicts"].item())
     try:
         flux = dat["flux"]
     except:
