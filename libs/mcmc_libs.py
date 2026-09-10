@@ -22,6 +22,157 @@ import time
 from datetime import datetime
 import h5py
 from numba import njit
+import copy
+
+
+# ---------------------------------------------------------
+# Built-in defaults
+# ---------------------------------------------------------
+
+# default config is for user building their own mcmc routine without a config file, 
+# so there are no catalog, filter, emulator in the defaults (user has to specify it)
+default_configs = {
+    "MCMC_settings": {
+        "nwalkers": 32,
+        "jitter": 1.0e-4,
+        "nsteps": 20000,
+        "discard": 5000,
+        "thin": 20,
+        "zprior": True,
+        "parallel": False,
+        "verbose": True
+        },
+
+    "Outputs": {
+        "save_sampler": False,
+        "sampler_filename": "use_id",
+        "output_dir": "mcmc_outputs",
+        "output_filename": "use_id",
+        "save_plots": False,
+        "plots_dir": "mcmc_outputs",
+    },
+    # prior_dicts should contain all possible parameter and their default range/init
+    # only the ones exist in loaded emulator will be used, and bounds will be overrided if 
+    # emulator parameters have smaller bounds
+    "prior_dicts": {
+        "zred": 
+        {
+            "init": 0.1,
+            "bounds": [0.0, 3.0],
+            "prior": {
+                "dist": "uniform"
+            }
+        },
+        "logmass": 
+        {
+            "init": 10.0,
+            "bounds": [7.5, 13.5],
+            "prior": {
+                "dist": "uniform"
+            }
+        },
+        "logzsol": 
+        {
+            "init": 0.0,
+            "bounds": [-2.0, 0.2],
+            "prior": {
+                "dist": "uniform"
+            }
+        },
+        "logsfr_ratios": 
+        {
+            "init": 0.0,
+            "bounds": [-5.0, 5.0],
+            "prior": {
+                "dist": "student_t",
+                "df": 2,
+                "loc": 0.0,
+                "scale": 0.3
+            }
+        },
+        # dust attenuation
+        "dust2": 
+        {
+            "init": 0.3,
+            "bounds": [0.0, 4.0],
+            "prior": {
+                "dist": "truncnorm",
+                "loc": 0.3,
+                "scale": 1.0
+            }
+        },
+        "dust_ratio": 
+        {
+            "init": 1.0,
+            "bounds": [0.0, 2.0],
+                "dist": "truncnorm",
+                "loc": 1.0,
+                "scale": 1.0
+            }
+        },
+        "dust_index": 
+        {
+            "init": -1.0,
+            "bounds": [-1.2, 0.4],
+            "prior": {
+                "dist": "uniform",
+            }
+        },
+        # dust emission
+        "duste_qpah": 
+        {
+            "init": 2.0,
+            "bounds": [0.0, 7.0],
+                "dist": "truncnorm",
+                "loc": 2.0,
+                "scale": 2.0
+        },
+        "log10_duste_gamma": 
+        {
+            "init": -2.0,
+            "bounds": [-4.0, 0.0],
+                "dist": "truncnorm",
+                "loc": -2.0,
+                "scale": 2.0
+        },
+        "duste_umin": 
+        {
+            "init": 1.0,
+            "bounds": [0.1, 25.0],
+                "dist": "truncnorm",
+                "loc": 1.0,
+                "scale": 20.0
+        },
+        # nebular emission
+        "gas_logz": 
+        {
+            "init": 0.0,
+            "bounds": [-2.0, 0.5],
+                "dist": "uniform",
+        },
+        "gas_logu": 
+        {
+            "init": -2.0,
+            "bounds": [-4.0, -1.0],
+                "dist": "uniform",
+        },
+        # AGN fraction
+        "log10_fagn": 
+        {
+            "init": -4.0,
+            "bounds": [-5.0, np.log10(3.0)],
+                "dist": "uniform",
+        },
+        "log10_agn_tau": 
+        {
+            "init": np.log10(10.0),
+            "bounds": [np.log10(5.0), np.log10(150.0)],
+                "dist": "uniform",
+        },
+
+    }
+
+
 
 # ===========================================
 # priors and logpdfs
@@ -342,103 +493,14 @@ class emulator_mcmc:
     """
 
     """
+    def __init__(
+            self,
+            config=None,
+            emulator_filename=None,
+            emulator=None,
+            nwalkers=None,
 
-    # ---------------------------------------------------------
-    # Built-in defaults
-    # ---------------------------------------------------------
+            ): 
 
-    # default config is for user building their own mcmc routine without a config file, 
-    # so there are no catalog, filter, emulator in the defaults (user has to specify it)
-    default_configs = {
-        "MCMC_settings": {
-            "nwalkers": 32,
-            "jitter": 1.0e-4,
-            "nsteps": 20000,
-            "discard": 5000,
-            "thin": 20,
-            "zprior": True,
-            "parallel": False,
-            "verbose": True
-            },
-
-        "Outputs": {
-            "save_sampler": False,
-            "sampler_filename": "use_id",
-            "output_dir": "mcmc_outputs",
-            "output_filename": "use_id",
-            "save_plots": False,
-            "plots_dir": "mcmc_outputs",
-        },
-        # prior_dicts should contain all possible parameter and their default range/init
-        # only the ones exist in loaded emulator will be used, and bounds will be overrided if 
-        # emulator parameters have smaller bounds
-        "prior_dicts": {
-            "zred": 
-            {
-                "init": 0.1,
-                "bounds": [0.0, 3.0],
-                "prior": {
-                    "dist": "uniform"
-                }
-            },
-            "logmass": 
-            {
-                "init": 10.0,
-                "bounds": [7.5, 13.5],
-                "prior": {
-                    "dist": "uniform"
-                }
-            },
-           "logzsol": 
-            {
-                "init": 0.0,
-                "bounds": [-2.0, 0.2],
-                "prior": {
-                    "dist": "uniform"
-                }
-            },
-           "logsfr_ratios": 
-            {
-                "init": 0.0,
-                "bounds": [-5.0, 5.0],
-                "prior": {
-                    "dist": "student_t",
-                    "df": 2,
-                    "loc": 0.0,
-                    "scale": 0.3
-                }
-            },
-           "dust2": 
-            {
-                "init": 0.3,
-                "bounds": [0.0, 4.0],
-                "prior": {
-                    "dist": "truncnorm",
-                    "loc": 0.3,
-                    "scale": 1.0
-                }
-            },
-           "dust_index": 
-            {
-                "init": -1.0,
-                "bounds": [-1.2, 0.4],
-                "prior": {
-                    "dist": "uniform",
-                }
-            },
-           "duste_qpah": 
-            {
-                "init": 2.0,
-                "bounds": [0.0, 7.0],
-                    "dist": "truncnorm",
-                    "loc": 2.0,
-                    "scale": 2.0
-                }
-            },
-            # TODO all other parameters' default
-
-        }
-
-    
-
+    self.config = copy.deepcopy(default_configs)
 

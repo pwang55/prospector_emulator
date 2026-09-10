@@ -782,37 +782,37 @@ def main():
         # pca_mean = None
 
     # first print out some settings on screen
-    print(f"Train data:\t{config["Data"]["train_data"]}")
+    print(f"Train data:\t{config['Data']['train_data']}")
     if config["Data"]["validation_data"] is not None:
-        print(f"Validation data:\t{config["Data"]["validation_data"]}")
+        print(f"Validation data:\t{config['Data']['validation_data']}")
     else:
-        print(f"Validation/Train split: {config["Data"]["validation_split"]} (seed={config["Data"]["validation_split_seed"]})")
-    print(f"Test data:\t{config["Data"]["test_data"]}")
-    print(f"PCA file:\t{config["Data"]["pca_file"]}")
+        print(f"Validation/Train split: {config['Data']['validation_split']} (seed={config['Data']['validation_split_seed']})")
+    print(f"Test data:\t{config['Data']['test_data']}")
+    print(f"PCA file:\t{config['Data']['pca_file']}")
     
-    print(f"Scaling method: coef={config["Scaler"]["coef_scaling"]}, mfrac={config["Scaler"]["mfrac_scaling"]}") 
+    print(f"Scaling method: coef={config['Scaler']['coef_scaling']}, mfrac={config['Scaler']['mfrac_scaling']}") 
     # print(f"\tcoef: ")
     # print(f"\tmfrac:")
     # print(f"Batch size: train={config["DataLoader"]["train_batch_size"]}, validation={config["DataLoader"]["validation_batch_size"]}")
     print("")
     print(f"Emulator::")
-    print(f"\tshared dims: {config["Emulator"]["shared_dims"]}")
-    print(f"\tcoef head dims: {config["Emulator"]["coef_head_dims"]}")
-    print(f"\tmfrac head dims: {config["Emulator"]["mfrac_head_dims"]}")
-    print(f"\tactivation: {config["Emulator"]["activation"]}")
-    print(f"\tpredict mfrac: {config["Emulator"]["predict_mfrac"]}")
+    print(f"\tshared dims: {config['Emulator']['shared_dims']}")
+    print(f"\tcoef head dims: {config['Emulator']['coef_head_dims']}")
+    print(f"\tmfrac head dims: {config['Emulator']['mfrac_head_dims']}")
+    print(f"\tactivation: {config['Emulator']['activation']}")
+    print(f"\tpredict mfrac: {config['Emulator']['predict_mfrac']}")
     if config["Emulator"]["dropout"] != 0:
-        print(f"\tdropout: {config["Emulator"]["dropout"]}")
+        print(f"\tdropout: {config['Emulator']['dropout']}")
     # print("")
     print(f"Loss:")
-    print(f"\tcoef loss: {config["Loss"]["coef_loss"]}")
-    print(f"\tmfrac loss: {config["Loss"]["mfrac_loss"]}")
-    print(f"\tmfrac lambda: {config["Loss"]["mfrac_lambda"]}")
-    print(f"Optimizer: {config["Optimizer"]["name"]}, learning rate={config["Optimizer"]["learning_rate"]}, weight decay={config["Optimizer"]["weight_decay"]}")
+    print(f"\tcoef loss: {config['Loss']['coef_loss']}")
+    print(f"\tmfrac loss: {config['Loss']['mfrac_loss']}")
+    print(f"\tmfrac lambda: {config['Loss']['mfrac_lambda']}")
+    print(f"Optimizer: {config['Optimizer']['name']}, learning rate={config['Optimizer']['learning_rate']}, weight decay={config['Optimizer']['weight_decay']}")
     # print("")
     print(f"Training settings: ")
-    print(f"\tmax_epochs={config["Training"]["max_epochs"]}, patience={config["Training"]["patience"]}, abs_tol={config["Training"]["abs_tol"]}, rel_tol={config["Training"]["rel_tol"]}")
-    print(f"\ttrain batch size={config["DataLoader"]["train_batch_size"]}, validation batch size={config["DataLoader"]["validation_batch_size"]}, num worker={config["DataLoader"]["train_num_workers"]}")
+    print(f"\tmax_epochs={config['Training']['max_epochs']}, patience={config['Training']['patience']}, abs_tol={config['Training']['abs_tol']}, rel_tol={config['Training']['rel_tol']}")
+    print(f"\ttrain batch size={config['DataLoader']['train_batch_size']}, validation batch size={config['DataLoader']['validation_batch_size']}, num worker={config['DataLoader']['train_num_workers']}")
     print("")
 
     # create Scaler
@@ -985,7 +985,7 @@ def main():
         optimizer=None,
     )
     if verbose:
-        print(f"test set loss={test_metrics[config["Training"]["monitor"]]}")
+        print(f"test set loss={test_metrics[config['Training']['monitor']]}")
         # print(test_metrics)
 
     if config["Outputs"]["save_plots"]:
