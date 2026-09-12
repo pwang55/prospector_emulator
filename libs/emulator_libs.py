@@ -804,6 +804,7 @@ class LoadedSPSEmulator:
 
         self.train_param_keys = self.checkpoint["train_param_keys"]
         self.default_params = self.checkpoint["default_params"]
+        self.prior_dicts = self.checkpoint["prior_dicts"]
 
     # single object inference method
     @torch.inference_mode()
