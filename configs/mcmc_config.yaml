@@ -9,9 +9,9 @@ emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_output
 MCMC:
   nwalkers: 32
   jitter: 1.0E-4
-  nsteps: 8000
-  discard: 2000
-  thin: 20
+  nsteps: 3000
+  discard: 1000
+  thin: 10
   zprior: True
   parallel: False
   n_processes: 4
@@ -42,24 +42,28 @@ Outputs:
 prior_dicts:
   # will be override by a gaussian zprior if it is set to true
   zred:
+    fixed: 
     init: 0.1
     bounds: [0.0, 3.0]
     prior:
       dist: loguniform1p
 
   logmass:
+    fixed:
     init: 10.0
     bounds: [7.5, 13.5]
     prior:
       dist: uniform
 
   logzsol:
+    fixed:
     init: 0.0
     bounds: [-2.0, 0.2]
     prior:
       dist: uniform
 
   logsfr_ratios:
+    fixed:
     init: 0.0
     bounds: [-5.0, 5.0]
     prior:
@@ -69,6 +73,7 @@ prior_dicts:
       scale: 0.3
 
   dust2:
+    fixed:
     init: 0.3
     bounds: [0.0, 4.0]
     prior:
@@ -77,12 +82,14 @@ prior_dicts:
       scale: 1.0
 
   dust_index:
+    fixed:
     init: -1.0
     bounds: [-1.2, 0.4]
     prior:
       dist: uniform
 
   duste_qpah:
+    fixed:
     init: 2.0
     bounds: [0.0, 7.0]
     prior:

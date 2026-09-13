@@ -35,5 +35,17 @@ You can use CLI arguments to override the config file; to check available option
 
 This code creates an `output_dir` that contains all the outputs from the script.
 
-## 
+## Run emulator MCMC
+
+If you have an L4 parquet file ready, and know the `SPHERExRefID`, you can set it up in `configs/mcmc_config.yaml`, then 
+
+```
+$ python emulator_mcmc.py -c configs/mcmc_config.yaml
+```
+
+There are also many CLI flags you can use to override the config file. To check what are available use `-h`. 
+
+Emulator MCMC routine can be custom built in jupyter notebooks or python scripts.  
+Check `tutorials/create_mcmc_routines.ipynb` to see how do do so.  
+
 

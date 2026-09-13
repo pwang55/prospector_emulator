@@ -26,6 +26,7 @@ import copy
 import libs.emulator_libs as elibs
 import libs.data_libs as dlibs
 import libs.sps_libs as spslibs
+from pprint import pprint
 
 # ---------------------------------------------------------
 # Built-in defaults
@@ -34,28 +35,29 @@ import libs.sps_libs as spslibs
 # default config is for user building their own mcmc routine without a config file, 
 # so there are no catalog, filter, emulator in the defaults (user has to specify it)
 default_configs = {
-    # "Files": {
-    #     'filters': None,
-    # },
+    "Files": {
+        'filters': None,
+    },
 
     # "Emulator": None,
 
     "MCMC": {
         "nwalkers": 32,
         "jitter": 1.0e-4,
-        "nsteps": 20000,
-        "discard": 5000,
-        "thin": 20,
+        "nsteps": 5000,
+        "discard": 2000,
+        "thin": 10,
         "zprior": True,
         "parallel": False,
+        "n_processes": 4,
         "verbose": True
     },
 
     "Outputs": {
         "save_sampler": False,
-        "sampler_filename": "use_id",
+        "sampler_filename": "emulator_mcmc_sampler.h5",
         "output_dir": "mcmc_outputs",
-        "output_filename": "use_id",
+        "output_filename": "emulator_mcmc_results.h5",
         "save_plots": False,
         "plots_dir": "mcmc_outputs",
     },
@@ -113,10 +115,11 @@ default_configs = {
         {
             "init": 1.0,
             "bounds": [0.0, 2.0],
+            "prior": {
                 "dist": "truncnorm",
                 "loc": 1.0,
                 "scale": 1.0
-            }
+            },
         },
         "dust_index": 
         {
@@ -131,52 +134,67 @@ default_configs = {
         {
             "init": 2.0,
             "bounds": [0.0, 7.0],
+            "prior": {
                 "dist": "truncnorm",
                 "loc": 2.0,
                 "scale": 2.0
+            },
         },
         "log10_duste_gamma": 
         {
             "init": -2.0,
             "bounds": [-4.0, 0.0],
+            "prior": {
                 "dist": "truncnorm",
                 "loc": -2.0,
                 "scale": 2.0
+            },
         },
         "duste_umin": 
         {
             "init": 1.0,
             "bounds": [0.1, 25.0],
+            "prior": {
                 "dist": "truncnorm",
                 "loc": 1.0,
                 "scale": 20.0
+            },
         },
         # nebular emission
         "gas_logz": 
         {
             "init": 0.0,
             "bounds": [-2.0, 0.5],
+            "prior": {
                 "dist": "uniform",
+            },
         },
         "gas_logu": 
         {
             "init": -2.0,
             "bounds": [-4.0, -1.0],
+            "prior": {
                 "dist": "uniform",
+            }
         },
         # AGN fraction
         "log10_fagn": 
         {
             "init": -4.0,
             "bounds": [-5.0, np.log10(3.0)],
+            "prior": {
                 "dist": "uniform",
+            }
         },
         "log10_agn_tau": 
         {
             "init": np.log10(10.0),
             "bounds": [np.log10(5.0), np.log10(150.0)],
+            "prior": {
                 "dist": "uniform",
+            }
         },
+        }
 
     }
 
@@ -503,6 +521,8 @@ def plot_sed_sfh(lamb_obs,
                  sfh_range_kwargs=None,
                  qs_tl_burst_kwargs=None,
                  save=False,
+                 wl_min=None,
+                 wl_max=None,
                  xscale='log',
                  yscale='log',
                  filename='mcmc_results_sed_sfh.png',
@@ -676,6 +696,10 @@ def plot_sed_sfh(lamb_obs,
             axi.legend()
             xmin = np.min(lbs_mins) * 0.8
             xmax = np.max(lbs_maxs) * 1.2
+            if wl_min is not None:
+                xmin = wl_min
+            if wl_max is not None:
+                xmax = wl_max
             if xmax > 7.5:
                 axi.set_xscale('log')
 
@@ -886,7 +910,7 @@ class emulator_mcmc:
                 "MCMC.parallel": parallel,
                 "MCMC.n_processes": n_processes,
                 "MCMC.verbose": verbose,
-                # "Files.filters": filters,
+                "Files.filters": filters,
                 "Outputs.output_dir": output_dir,
                 "Outputs.save_sampler": save_sampler,
                 "Outputs.sampler_filename": sampler_filename,
@@ -913,31 +937,17 @@ class emulator_mcmc:
         self.plots_dir = self.config["Outputs"]["plots_dir"]
         self.save_plots = self.config["Outputs"]["save_plots"]
 
-        print(self.discard, self.thin)
-
+        self.filters = self._resolve_filters(self.config["Files"]["filters"])
         self.emulator = self._resolve_emulator(emulator)
-        self.filters = self._resolve_filters(filters)
-        self.prior_dict = None
+        self.prior_dicts = None
         self.logprior_funcs = None
         # self._mcmc_setup_signature = None
 
-        # create self.prior_dict and self.logprior_funcs from emulator and config
+        self.user_prior = copy.deepcopy(self.config["prior_dicts"])
+
+        # create self.prior_dicts and self.logprior_funcs from emulator and config
         if self.emulator is not None:
             self.setup_mcmc()
-
-    @property
-    def emulator(self):
-        return self._emulator
-
-    @emulator.setter
-    def emulator(self, value):
-        self._emulator = value
-        # Anything derived from the emulator is now invalid.
-        self.prior_dict = None
-        self.logprior_funcs = None
-        self.logsfr_ratios_index = None
-        self.zred_index = None
-        self.logmass_index = None
 
     def _resolve_emulator(self, emulator=None):
         # Explicitly supplied
@@ -957,38 +967,28 @@ class emulator_mcmc:
         # Allow incomplete construction
         return None
 
-    def _resolve_filters(self, filters=None):
-        # Explicitly supplied
-        if filters is not None:
+    @staticmethod
+    def _resolve_filters(filters):
+        if filters is False:
+            return None
 
-            # Path / filename
-            if isinstance(filters, (str, Path)):
-                return dlibs.read_filters(filters)
+        if isinstance(filters, (str, Path)):
+            return dlibs.read_filters(filters)
 
-            # Already-loaded filter array
-            return filters
-
-        # Try config
-        filters_config = self.config["Files"]["filters"]
-
-        if filters_config is not None:
-            return dlibs.read_filters(filters_config)
-
-        # Allow incomplete construction
-        return None
+        return filters
 
     def check_mcmc_ready(self):
         missing = []
         if self.emulator is None:
             missing.append("emulator")
-        if self.filters is None:
-            missing.append("filters")
+        # if self.filters is None:
+            # missing.append("filters")
         if missing:
             raise RuntimeError("MCMC is not ready. Missing required attributes: " + ", ".join(missing))
         return True
 
     @staticmethod
-    def build_mcmc_prior_dict(mcmc_prior_dicts, emulator_prior_dicts):
+    def build_mcmc_prior_dicts(mcmc_prior_dicts, emulator_prior_dicts):
         """
         Reconcile MCMC priors with emulator training bounds.
         The emulator determines the maximum allowed parameter support.
@@ -1002,12 +1002,13 @@ class emulator_mcmc:
             Priors/bounds stored with the trained emulator.
         Returns
         -------
-        prior_dict : dict
-            Only parameters present in emulator_prior_dicts, with bounds
+        prior_dicts : dict
+            Only parameters present in emulator_prior_dict, with bounds
             clipped to the emulator training range.
         """
 
-        prior_dict = {}
+        prior_dicts = {}
+        fixed_dicts = {}
 
         for key, train_config in emulator_prior_dicts.items():
 
@@ -1018,6 +1019,25 @@ class emulator_mcmc:
                 )
 
             mcmc_config = copy.deepcopy(mcmc_prior_dicts[key])
+            # -----------------------------------------------------
+            # Fixed parameter
+            # -----------------------------------------------------
+            if mcmc_config.get("fixed") is not None:
+
+                fixed_value = mcmc_config["fixed"]
+
+                # TODO this assumes user input dimension is correct, should check it in the future
+                if key == "logsfr_ratios":
+                    for i, value in enumerate(fixed_value):
+                        fixed_dicts[f"logsfr_ratios{i}"] = value
+                else:
+                    fixed_dicts[key] = fixed_value
+
+                continue
+
+            # -----------------------------------------------------
+            # Free parameter
+            # -----------------------------------------------------
 
             train_low, train_high = train_config["bounds"]
             mcmc_low, mcmc_high = mcmc_config["bounds"]
@@ -1035,12 +1055,12 @@ class emulator_mcmc:
 
             mcmc_config["bounds"] = [effective_low, effective_high]
 
-            prior_dict[key] = mcmc_config
+            prior_dicts[key] = mcmc_config
 
-        return prior_dict
+        return prior_dicts, fixed_dicts
 
     @staticmethod
-    def build_logprior_funcs(prior_dict, train_param_keys):
+    def build_logprior_funcs(prior_dicts, train_param_keys):
         """
         Build one log-prior function for each emulator parameter.
         The returned list follows exactly the ordering of train_param_keys.
@@ -1056,14 +1076,14 @@ class emulator_mcmc:
                 prior_key = "logsfr_ratios"
             else:
                 prior_key = key
-            if prior_key not in prior_dict:
+            if prior_key not in prior_dicts:
                 raise KeyError(f"No MCMC prior defined for '{key}'. "f"Expected prior entry '{prior_key}'.")
-            config = prior_dict[prior_key]
+            config = prior_dicts[prior_key]
             logprior_funcs.append(create_logprior_func(config))
 
         return logprior_funcs
 
-    def build_initial(self, prior_dict, train_param_keys):
+    def build_initial(self, prior_dicts, train_param_keys):
         initial = []
 
         for key in train_param_keys:
@@ -1073,42 +1093,136 @@ class emulator_mcmc:
                 else key
             )
 
-            if prior_key not in prior_dict:
+            if prior_key not in prior_dicts:
                 raise KeyError(
                     f"No prior definition for '{key}'. "
                     f"Expected '{prior_key}'."
                 )
 
-            initial.append(prior_dict[prior_key]["init"])
+            initial.append(prior_dicts[prior_key]["init"])
 
         return np.asarray(initial, dtype=float)
 
 
-    def setup_mcmc(self):
+    def setup_mcmc(self, prior=None):
         """Build/rebuild all MCMC state that depends on the emulator."""
 
         if self.emulator is None:
             raise RuntimeError(
                 "Cannot set up MCMC without an emulator."
             )
-        self.prior_dict = self.build_mcmc_prior_dict(
-            self.config["prior_dicts"],
-            self.emulator.prior_dicts,
-        )
-        self.logprior_funcs = self.build_logprior_funcs(
-            self.prior_dict,
-            self.emulator.train_param_keys,
-        )
-        # self._mcmc_setup = True
-        keys = self.emulator.train_param_keys
-        self.keys = keys
-        self.zred_index = keys.index("zred")
+        
+        if prior is None:
+            prior_input = self.config["prior_dicts"]
+        else:
+            prior_input = prior
 
-        has_logsfr = any(
-            key.startswith("logsfr_ratios")
-            for key in keys
+        # ---------------------------------------------------------
+        # Build free-prior and fixed-parameter dictionaries
+        # ---------------------------------------------------------
+        self.prior_dicts, self.fixed_dicts = self.build_mcmc_prior_dicts(
+            prior_input, 
+            self.emulator.prior_dicts
+            )
+        # ---------------------------------------------------------
+        # Full emulator parameter ordering
+        # ---------------------------------------------------------
+        self.train_param_keys = self.emulator.train_param_keys
+        self.fixed_param_keys = [
+            key
+            for key in self.train_param_keys
+            if key in self.fixed_dicts
+        ]
+        # ---------------------------------------------------------
+        # Fixed/free parameters
+        # ---------------------------------------------------------
+        self.free_param_keys = [
+            key
+            for key in self.train_param_keys
+            if key not in self.fixed_dicts
+        ]
+
+        self.fixed_param_vals = np.array(
+            [
+                self.fixed_dicts[key]
+                for key in self.fixed_param_keys
+            ],
+            dtype=float,
         )
-        has_tage = "tau" in keys
+        # ---------------------------------------------------------
+        # Dimensions
+        # ---------------------------------------------------------
+        self.ndim_train = len(self.train_param_keys)
+        self.ndim_mcmc = len(self.free_param_keys)
+
+        # ---------------------------------------------------------
+        # Indices in full emulator x
+        # ---------------------------------------------------------            
+        self.index_fixed_in_train = np.array(
+            [
+                i
+                for i, key in enumerate(self.train_param_keys)
+                if key in self.fixed_dicts
+            ],
+            dtype=int,
+        )
+
+        self.index_free_in_train = np.array(
+            [
+                i
+                for i, key in enumerate(self.train_param_keys)
+                if key not in self.fixed_dicts
+            ],
+            dtype=int,
+        )
+
+        # ---------------------------------------------------------
+        # Useful parameter indices
+        # ---------------------------------------------------------
+
+        self.train_index = {
+            key: i
+            for i, key in enumerate(self.train_param_keys)
+        }
+
+        self.mcmc_index = {
+            key: i
+            for i, key in enumerate(self.free_param_keys)
+        }
+
+        self.zred_train_index = self.train_index.get("zred")
+        self.logmass_train_index = self.train_index.get("logmass")
+        self.zred_mcmc_index = self.mcmc_index.get("zred")
+        self.logmass_mcmc_index = self.mcmc_index.get("logmass")
+
+        self.logsfr_ratios_train_index = np.array(
+            [
+                self.train_index[key]
+                for key in self.train_param_keys
+                if key.startswith("logsfr_ratios")
+            ],
+            dtype=int,
+        )
+
+        self.logsfr_ratios_mcmc_index = np.array(
+            [
+                self.mcmc_index[key]
+                for key in self.free_param_keys
+                if key.startswith("logsfr_ratios")
+            ],
+            dtype=int,
+        )
+
+        # ---------------------------------------------------------
+        # Prior functions for free MCMC parameters only
+        # ---------------------------------------------------------
+        self.logprior_funcs = self.build_logprior_funcs(
+            self.prior_dicts,
+            self.free_param_keys,
+        )
+
+        has_logsfr = len(self.logsfr_ratios_train_index) > 0
+        has_tage = "tau" in self.train_param_keys
 
         if has_logsfr and has_tage:
             raise ValueError(
@@ -1122,56 +1236,88 @@ class emulator_mcmc:
         else:
             self.sfh_type = None
 
-        self.logsfr_ratios_index = np.array([i for i, key in enumerate(keys) if key.startswith("logsfr_ratios")], dtype=int)
-        self.logmass_index = keys.index("logmass")
-        self.ndim = len(keys)
-
         self.initial = self.build_initial(
-            self.prior_dict,
-            self.emulator.train_param_keys,
+            self.prior_dicts,
+            self.free_param_keys,
         )
 
     
     def redshift_prior_funcs(
         self,
-        prior_dict,
+        prior_dicts,
         logprior_funcs,
         # initial,
         redshift,
-        redshift_sigma,
+        redshift_err,
     ):
         """
         Return temporary MCMC prior functions and initial values with
         an object-specific truncated-normal redshift prior.
         """
-        if redshift_sigma <= 0:
-            raise ValueError("redshift_sigma must be > 0.")
+        if redshift_err <= 0:
+            raise ValueError("redshift_err must be > 0.")
 
         # zred_index was already established in setup_mcmc()
-        if self.zred_index is None:
-            raise RuntimeError("zred_index has not been set up.")
+        if self.zred_mcmc_index is None:
+            raise RuntimeError("Cannot apply redshift prior because zred is not a free MCMC parameter")
 
         # Copy so the persistent MCMC state is unchanged
         logprior_funcs_new = logprior_funcs.copy()
         # initial_new = initial.copy()
 
         # Keep the reconciled emulator bounds from prior_dict
-        zred_config = copy.deepcopy(prior_dict["zred"])
+        zred_config = copy.deepcopy(prior_dicts["zred"])
 
         # Object-specific redshift prior
         zred_config["prior"] = {
             "dist": "truncnorm",
             "loc": redshift,
-            "scale": redshift_sigma,
+            "scale": redshift_err,
         }
 
         # Use the generic prior factory
-        logprior_funcs_new[self.zred_index] = create_logprior_func(zred_config)
+        logprior_funcs_new[self.zred_mcmc_index] = create_logprior_func(zred_config)
 
         # Object-specific initial value
         # initial_new[self.zred_index] = redshift
 
         return logprior_funcs_new#, initial_new
+
+
+    def theta_to_x(self, theta):
+        x = np.empty(self.ndim_train, dtype=float)
+        x[self.index_fixed_in_train] = self.fixed_param_vals
+        x[self.index_free_in_train] = theta
+        return x
+
+    def get_param_value(self, key, theta):
+        """
+        Return the value of a parameter from theta if free,
+        otherwise from fixed_dict.
+        """
+        if key in self.fixed_dicts:
+            return self.fixed_dicts[key]
+
+        return theta[self.mcmc_index[key]]
+
+    def get_logsfr_ratios(self, theta):
+        """Reconstruct the full logsfr_ratios array from theta/fixed values."""
+
+        logsfr_ratios = np.empty(
+            len(self.logsfr_ratios_train_index),
+            dtype=float,
+        )
+
+        for i, train_idx in enumerate(self.logsfr_ratios_train_index):
+            key = self.train_param_keys[train_idx]
+
+            if key in self.fixed_dicts:
+                logsfr_ratios[i] = self.fixed_dicts[key]
+            else:
+                logsfr_ratios[i] = theta[self.mcmc_index[key]]
+
+        return logsfr_ratios
+
 
 
     def log_prior(self, theta, logprior_funcs=None):
@@ -1187,20 +1333,29 @@ class emulator_mcmc:
 
         return logp
 
-    def log_probability(self, theta, flux, flux_error, logprior_funcs=None):
+    def log_probability(self, theta, flux, flux_error=None, flux_lbs=None, filters=None, logprior_funcs=None):
         lp = self.log_prior(theta, logprior_funcs=logprior_funcs)
 
         if not np.isfinite(lp):
             return -np.inf, 0.0
-        prediction = self.emulator.predict_one(theta)
+        x = self.theta_to_x(theta)
+        prediction = self.emulator.predict_one(x)
 
-        zred = theta[self.zred_index]
-        lbs = prediction["lbs"] * (1+zred)
+        zred = self.get_param_value("zred", theta)
+        lbs_model_shifted = prediction["lbs"] * (1.0+zred)
         flux_model = prediction["flux"]
         mfrac = prediction["mfrac_scaled"]
-        flux_model_conv = dlibs.convolve_filter(wl=lbs, flux=flux_model, filters=self.filters)
+        if filters is None:
+            if flux_lbs is None:
+                raise ValueError("lbs and filters cannot both be None!")
+            flux_model_conv = np.interp(flux_lbs, lbs_model_shifted, flux_model)
+        else:
+            flux_model_conv = dlibs.convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
 
-        ll = -0.5 * np.sum((flux_model_conv-flux)**2 / flux_error**2 + np.log(2*np.pi*flux_error**2))
+        if flux_error is None:
+            ll = -0.5 * np.sum((flux_model_conv-flux)**2)
+        else:
+            ll = -0.5 * np.sum((flux_model_conv-flux)**2 / flux_error**2 + np.log(2*np.pi*flux_error**2))
         log_prob = lp + ll
 
         return log_prob, mfrac
@@ -1208,9 +1363,11 @@ class emulator_mcmc:
     def run_mcmc(
             self, 
             flux,
-            flux_error,
+            flux_err=None,
+            flux_lbs=None,
+            filters=None,
             redshift=None, 
-            redshift_sigma=None,
+            redshift_err=None,
             initial=None,
             nwalkers=None,
             jitter=None,
@@ -1218,6 +1375,7 @@ class emulator_mcmc:
             zprior=None,
             discard=None,
             thin=None,
+            prior=None,
             save_sampler=None,
             sampler_filename=None,
             verbose=None,
@@ -1225,9 +1383,14 @@ class emulator_mcmc:
             n_processes=None,
             results=True,
             ):
-        
+
+        # if flux_err is None:
+            # flux_err = np.ones_like(flux)
         # initial_user = initial is not None
-        initial = self.initial.copy() if initial is None else np.asarray(initial).copy()
+        if filters is None:
+            filters = self.filters
+        else:
+            filters = self._resolve_filters(filters)
 
         nwalkers = self.nwalkers if nwalkers is None else nwalkers
         jitter = self.jitter if jitter is None else jitter
@@ -1240,39 +1403,44 @@ class emulator_mcmc:
         sampler_filename = self.sampler_filename if sampler_filename is None else sampler_filename
         verbose = self.verbose if verbose is None else verbose
         parallel = self.parallel if parallel is None else parallel
-        n_processes = self.parallel if n_processes is None else n_processes
+        n_processes = self.n_processes if n_processes is None else n_processes
 
         self.check_mcmc_ready()
 
         # If setup has not happened, do it now.
-        if self.prior_dict is None or self.logprior_funcs is None:
-            self.setup_mcmc()
+        # if self.prior_dicts is None or self.logprior_funcs is None:
+        self.setup_mcmc(prior=prior)
+        initial = self.initial.copy() if initial is None else np.asarray(initial).copy()
+
+        # TEMP
+        self.flux = flux
+        self.flux_err = flux_err
 
         # self.ndim = len(self.emulator.train_param_keys)
         logprior_funcs = self.logprior_funcs
 
-        if zprior:
+        if zprior and "zred" in self.mcmc_index:
 
-            if redshift is None and redshift_sigma is None:
+            if redshift is None and redshift_err is None:
                 logprior_funcs = self.logprior_funcs
-            elif redshift is not None and redshift_sigma is not None:
+            elif redshift is not None and redshift_err is not None:
                 logprior_funcs = self.redshift_prior_funcs(
-                    self.prior_dict,
+                    self.prior_dicts,
                     self.logprior_funcs,
                     redshift,
-                    redshift_sigma,
+                    redshift_err,
                 )
                 # if not initial_user:
-                initial[self.zred_index] = redshift
+                initial[self.zred_mcmc_index] = redshift
             else:
-                raise ValueError("redshift and redshift_sigma must be provided together.")
+                raise ValueError("redshift and redshift_err must be provided together.")
 
         # set up initial position with jitters
-        initial_pos = initial + jitter * np.random.randn(nwalkers, self.ndim)
+        initial_pos = initial + jitter * np.random.randn(nwalkers, self.ndim_mcmc)
 
         if save_sampler:
             backend = emcee.backends.HDFBackend(sampler_filename)
-            backend.reset(nwalkers, self.theta.ndim)
+            backend.reset(nwalkers, self.ndim_mcmc)
         else:
             backend = None        
 
@@ -1280,9 +1448,9 @@ class emulator_mcmc:
             with multiprocessing.Pool(processes=n_processes) as pool:
                 self.sampler = emcee.EnsembleSampler(
                     nwalkers=nwalkers,
-                    ndim=self.ndim,
+                    ndim=self.ndim_mcmc,
                     log_prob_fn=self.log_probability,
-                    args=(flux, flux_error, logprior_funcs),
+                    args=(flux, flux_err, flux_lbs, filters, logprior_funcs),
                     backend=backend,
                     pool=pool
                 )
@@ -1290,9 +1458,9 @@ class emulator_mcmc:
         else:
                 self.sampler = emcee.EnsembleSampler(
                     nwalkers=nwalkers,
-                    ndim=self.ndim,
+                    ndim=self.ndim_mcmc,
                     log_prob_fn=self.log_probability,
-                    args=(flux, flux_error, logprior_funcs),
+                    args=(flux, flux_err, flux_lbs, filters, logprior_funcs),
                     backend=backend,
                 )
                 self.sampler.run_mcmc(initial_pos, nsteps, progress=verbose)
@@ -1318,29 +1486,47 @@ class emulator_mcmc:
         mfracs_percentiles = np.percentile(flat_mfracs, [16, 50, 84])
         autocorr = self.sampler.get_autocorr_time(discard=discard, thin=thin, tol=0)
 
-        prediction_med = self.emulator.predict_one(theta_percentiles[1])
-        zred_med = theta_percentiles[1][self.zred_index]
+        self.flat_samples = flat_samples
+
+        x_med = self.theta_to_x(theta_percentiles[1])
+        prediction_med = self.emulator.predict_one(x_med)
+
+        if "zred" in self.free_param_keys:
+            zred_med = theta_percentiles[1][self.mcmc_index["zred"]]
+            zred_16 = theta_percentiles[0][self.mcmc_index["zred"]]
+            zred_84 = theta_percentiles[2][self.mcmc_index["zred"]]
+        else:
+            zred_med = self.fixed_dicts["zred"]
+            zred_16 = self.fixed_dicts["zred"]
+            zred_84 = self.fixed_dicts["zred"]
+
+        if "logmass" in self.free_param_keys:
+            logmass_med = theta_percentiles[1][self.mcmc_index["logmass"]]
+        else:
+            logmass_med = self.fixed_dicts["logmass"]
+        logsfr_ratios_med = self.get_logsfr_ratios(theta_percentiles[1])
+
         lbs_med = prediction_med["lbs"] * (1+zred_med)  # prediction lbs is rest frame
         flux_med = prediction_med["flux"]
         flux_med_conv = dlibs.convolve_filter(lbs_med, flux_med, filters=self.filters)
         mfrac_med = mfracs_percentiles[1]
 
+        # save some med results for easy access
+        self.lbs_med = lbs_med
+        self.flux_med = flux_med
+        self.zred_med = zred_med
+        self.zred_16 = zred_16
+        self.zred_84 = zred_84
+        self.logmass_med = logmass_med
+        self.logsfr_ratios_med = logsfr_ratios_med
+
         if self.sfh_type == 'continuity_sfh':
             agebins_med, massbins_med, med_sfrs_med = spslibs.continuity_sfh_agebins_sfrs(
-                theta_percentiles[1][self.zred_index],
-                theta_percentiles[1][self.logsfr_ratios_index],
-                theta_percentiles[1][self.logmass_index],
+                zred_med,
+                logsfr_ratios_med,
+                logmass_med,
             )
-            # agebins_p16, massbins_p16, med_sfrs_p16 = spslibs.continuity_sfh_agebins_sfrs(
-            #     theta_percentiles[0][self.zred_index],
-            #     theta_percentiles[0][self.logsfr_ratios_index],
-            #     theta_percentiles[0][self.logmass_index],
-            # )
-            # agebins_p84, massbins_p84, med_sfrs_p84 = spslibs.continuity_sfh_agebins_sfrs(
-            #     theta_percentiles[2][self.zred_index],
-            #     theta_percentiles[2][self.logsfr_ratios_index],
-            #     theta_percentiles[2][self.logmass_index],
-            # )
+
             results = {
                 'flat_samples': flat_samples,
                 'flat_mfracs': flat_mfracs,
@@ -1354,7 +1540,9 @@ class emulator_mcmc:
                 'agebins_med': agebins_med,
                 'massbins_med': massbins_med,
                 'sfrs_med': med_sfrs_med,
-                'keys': self.keys,
+                'free_param_keys': self.free_param_keys,
+                'fixed_param_keys': self.fixed_param_keys,
+                'fixed_param_vals': self.fixed_param_vals,
                 'autocorr': autocorr
             }
 
@@ -1362,6 +1550,71 @@ class emulator_mcmc:
 
         return results
 
+    def get_continuity_sfh_all_agelims_sfrs(self, flat_samples=None):
+        if flat_samples is None:
+            flat_samples = self.flat_samples
+        n_samples = len(flat_samples)
+        nbins = self.emulator.default_params["nbins"]
+        all_age_lims = np.zeros((n_samples, nbins+1))
+        all_sfrs = np.zeros((n_samples, nbins))
+
+        for i in range(n_samples):
+            theta_i = flat_samples[i]
+            zred_i = self.get_param_value("zred", theta_i)
+            logmass_i = self.get_param_value("logmass", theta_i)
+            logsfr_ratios_i = self.get_logsfr_ratios(theta_i)
+            agebins_i, _, sfrs_i = spslibs.continuity_sfh_agebins_sfrs(zred_i, logsfr_ratios_i, logmass_i)
+            age_lims_i = np.hstack([agebins_i[:,0], agebins_i[-1,1]])
+            all_age_lims[i] = age_lims_i
+            all_sfrs[i] = sfrs_i
+        return all_age_lims, all_sfrs
+
+    def current_settings(self):
+        print("nwalkers:", self.nwalkers)
+        print("nsteps:", self.nsteps)
+        print("jitter:", self.jitter)
+        print("discard:", self.discard)
+        print("thin:", self.thin)
+        print("zprior:", self.zprior)
+        print("save_sampler:", self.save_sampler)
+        print("save_plots:", self.save_plots)
+        # print("parallel:", self.parallel)
+        print("\ncurrent prior:")
+        pprint(self.prior_dicts, sort_dicts=False)
 
 
+    # TODO saving file function
+    def save_results(self, 
+                     results=None, 
+                     output_filename=None,
+                     output_dir=None,):
+        if results is None:
+            results = self.results
+        if output_filename is None:
+            output_filename = self.output_filename
+        if output_dir is None:
+            output_dir = self.output_dir
 
+        dlibs.save_h5_results(results, 
+                        output_filename=output_filename, 
+                        output_dir=output_dir,
+                        metadata={
+                            'free_param_keys': self.free_param_keys,
+                            'fixed_param_keys': self.fixed_param_keys,
+                            'fixed_param_vals': self.fixed_param_vals,
+                            # 'start_time': start_datetime,
+                            # 'end_time': end_datetime,
+                            # 'SPHERExRefID': spherex_id,
+                            "flux_obs": self.flux,
+                            "flux_err_obs": self.flux_err,
+                            'nwalkers': self.nwalkers,
+                            'jitter': self.jitter,
+                            'nsteps': self.nsteps,
+                            'discard': self.discard,
+                            'thin': self.thin,
+                            'zprior': self.zprior,
+                            'parallel': self.parallel
+                            }
+                        )
+
+    

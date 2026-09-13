@@ -155,11 +155,8 @@ def parametric_sfrs(zred,
 
 
 
-def continuity_sfh_percentiles_steps(flat_samples,
-                                     theta=None,
-                                     zred_idx=0,
-                                     logmass_idx=2,
-                                     logsfr_ratios_idx=np.array([3,4,5,6,7,8]),
+def continuity_sfh_percentiles_steps(agelims=None,
+                                     sfrs=None,
                                      n_transition=20,
                                      transition_start_idx=3,
                                      percentiles=[16, 50, 84]):
@@ -169,16 +166,10 @@ def continuity_sfh_percentiles_steps(flat_samples,
 
     Parameters
     ----------
-    flat_samples : np.array of shape (nsamples, ndims)
-        Flattened MCMC chain
-    theta : prospector_mcmc.theta instance
-        theta instance containing all theta metadata, will ignore _idx keywords
-    zred_idx : int
-        Where redshift is in the flat_sample MCMC parameters
-    logmass_idx : int
-        Where logmass is in the parameters
-    logsfr_ratios_idx : np.array
-        All indexes for logsfr_ratios in parameters
+    agelims: np.array of shape (n_samples, n_sfr_bins+1)
+    
+    sfrs: np.array of shape (nsamples, n_sfr_bins)
+
     n_transition : int
         How finely to chop during age lims where change in redshift cause agebins to change
         and calculate continuous percentiles within those regions
@@ -198,27 +189,13 @@ def continuity_sfh_percentiles_steps(flat_samples,
     if type(percentiles) is int or type(percentiles) is float:
         percentiles = [percentiles]
     n_percentiles = len(percentiles)
-    nbins = len(logsfr_ratios_idx)+1
+    # nbins = len(logsfr_ratios_idx)+1
+    nbins = sfrs.shape[1]
+
     transition_idx = np.arange(transition_start_idx, nbins)
     # loop over each step in MCMC chain to calculate agebins and SFRs
-    all_age_lims = np.zeros((flat_samples.shape[0], nbins+1)) #/1e9
-    all_sfrs = np.zeros((flat_samples.shape[0], nbins))
-
-    if theta is not None:
-        zred_idx = theta.zred_idx
-        logmass_idx = theta.logmass_idx
-        logsfr_ratios_idx = theta.logsfr_ratios_idx
-
-    for i, _ in enumerate(flat_samples):
-        theta_i = flat_samples[i]
-        zred_i = theta_i[zred_idx]
-        logmass_i = theta_i[logmass_idx]
-        logsfr_ratios_i = theta_i[logsfr_ratios_idx]
-        agebins_i, _, sfrs_i = continuity_sfh_agebins_sfrs(zred_i, logsfr_ratios_i, logmass_i)
-
-        age_lims_i = np.hstack([agebins_i[:,0], agebins_i[-1,1]]) #/1e9
-        all_age_lims[i] = age_lims_i
-        all_sfrs[i] = sfrs_i
+    all_age_lims = agelims
+    all_sfrs = sfrs
 
     age_lims_tbins = np.zeros((n_transition)*len(transition_idx))
 

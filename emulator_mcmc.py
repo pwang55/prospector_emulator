@@ -230,6 +230,24 @@ def parse_args():
     return parser.parse_args()
 
 
+def format_runtime(seconds):
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+
+    if seconds < 3600:
+        minutes, seconds = divmod(seconds, 60)
+        return f"{int(minutes)}m:{seconds:.1f}s"
+
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    return (
+        f"{int(hours)}h:"
+        f"{int(minutes)}m:"
+        f"{seconds:.1f}s"
+    )
+
+
 def main():
 
     start_datetime = datetime.now().isoformat(timespec='seconds')
@@ -246,7 +264,7 @@ def main():
     plots_dir = yaml_config['Outputs']['plots_dir'] if args.plots_dir is None else args.plots_dir
     output_dir = yaml_config['Outputs']['output_dir'] if args.output_dir is None else args.output_dir    
     output_filename = yaml_config['Outputs']['output_filename'] if args.output_filename is None else args.output_filename
-    save_sampler = yaml_config['Outputs']['save_sampler'] if args.save_sampler is None else args.save_sampler
+    # save_sampler = yaml_config['Outputs']['save_sampler'] if args.save_sampler is None else args.save_sampler
     sampler_filename = yaml_config['Outputs']['sampler_filename'] if args.sampler_filename is None else args.sampler_filename
 
     verbose = yaml_config['MCMC']['verbose'] if args.verbose is None else args.verbose
@@ -309,7 +327,7 @@ def main():
 
 
     if verbose:
-        mlibs.display_fits(theta_percentiles=results["theta_percentiles"], keys=emcmc_obj.keys)
+        mlibs.display_fits(theta_percentiles=results["theta_percentiles"], keys=emcmc_obj.free_param_keys)
 
 
     # get lamb_obs for plotting purpose
@@ -334,13 +352,13 @@ def main():
     # ------------- save plot block ---------------
     if save_plots:
         mlibs.plot_chain(emcmc_obj.full_samples,
-                   ylabels=emcmc_obj.keys,
+                   ylabels=emcmc_obj.free_param_keys,
                    save=True,
                    filename=f'mcmc_results_chains_{spherex_id}.png',
                    output_dirname=plots_dir)
 
         mlibs.plot_corner(results['flat_samples'],
-                    ylabels=emcmc_obj.keys,
+                    ylabels=emcmc_obj.free_param_keys,
                     save=True,
                     filename=f'mcmc_results_corner_{spherex_id}.png',
                     output_dirname=plots_dir
@@ -348,11 +366,11 @@ def main():
         
         # get model and SFH percentiles for sed_sfh plot
         if emcmc_obj.sfh_type == 'continuity_sfh':
+            all_age_lims, all_sfrs = emcmc_obj.get_continuity_sfh_all_agelims_sfrs()
+
             qs_agelims, qs_agebins_all_sfrs = slibs.continuity_sfh_percentiles_steps(
-                results['flat_samples'],
-                zred_idx=emcmc_obj.zred_index,
-                logmass_idx=emcmc_obj.logmass_index,
-                logsfr_ratios_idx=emcmc_obj.logsfr_ratios_index,
+                agelims=all_age_lims,
+                sfrs=all_sfrs,
                 n_transition=50,
                 transition_start_idx=3,
                 percentiles=[16,50,84]
@@ -368,6 +386,8 @@ def main():
                          qs_sfrsteps=qs_agebins_all_sfrs,
                          external_phots=cat.external_phots,
                          save=True,
+                         wl_min=0.2,
+                         wl_max=5.5,
                          filename=f"mcmc_results_sed_sfh_{spherex_id}.png",
                          output_dirname=plots_dir,
                          title_kwargs={
@@ -376,9 +396,9 @@ def main():
                             'zphot': cat.zphot,
                             'zphot_u68': cat.zphot_u68,
                             'zphot_l68': cat.zphot_l68,
-                            'zmcmc_med': results["theta_percentiles"][1, emcmc_obj.zred_index],
-                            'zmcmc_16': results["theta_percentiles"][0, emcmc_obj.zred_index],
-                            'zmcmc_84': results["theta_percentiles"][2, emcmc_obj.zred_index],
+                            'zmcmc_med': emcmc_obj.zred_med,
+                            'zmcmc_16': emcmc_obj.zred_16,
+                            'zmcmc_84': emcmc_obj.zred_84,
                             'frac102': cat.frac102,
                             'fontsize': 9,
                             }
@@ -395,7 +415,9 @@ def main():
                     output_filename=output_filename, 
                     output_dir=output_dir,
                     metadata={
-                        'keys': results['keys'],
+                        'free_param_keys': results['free_param_keys'],
+                        'fixed_param_keys': results['fixed_param_keys'],
+                        'fixed_param_vals': results['fixed_param_vals'],
                         'start_time': start_datetime,
                         'end_time': end_datetime,
                         'SPHERExRefID': spherex_id,
@@ -413,8 +435,8 @@ def main():
                         'parallel': emcmc_obj.parallel
                         }
                     )
-
-    print(f'MCMC runtime = {elapsed_time} seconds')
+    if verbose:
+        print(f'MCMC runtime = {format_runtime(elapsed_time)} seconds')
 
 if __name__ == '__main__':
     main()
