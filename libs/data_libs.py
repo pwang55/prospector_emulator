@@ -196,9 +196,128 @@ def read_h5_results(h5file):
         for i, key in enumerate(f.attrs) :
             mcmc_results['attributes'][key] = f.attrs[key]
     return mcmc_results
+# ==========================================================================
+
+
 
 # Read SPHEREx filters
-def read_filters(filter_list, half_length=105, return_lamb_obs=False, response_threshold=0.1):
+def read_filters(filter_list, half_length=105, return_lamb_obs=False, response_threshold=0.1, return_unique_inverse=False):
+    '''
+    Read SPHEREx official filters and return ndarray of (nfilt, 2, 2*half_length)
+    
+    Parameters
+    ----------
+    filter_list : str
+        Full path to the filter_list.txt that contains all the filter names in order
+    half_length : int, default=105
+        Half size of each filter's length.
+        Currently, official SPHEREx filters don't have the same size; half_length of 105 is a good middle ground for 306 bands
+        to cut off unimportant outside parts while preserving response to <3% accuracy.
+        If half_length*2 > existing wavelength grid, fill longer wavelength side with zeros
+    return_unique_inverse : bool, default=False
+        If True, also return unique_wavelength, inverse_wavelength, conv_weights that will be
+        used in fast_convolve_filters()
+    return_lamb_obs : bool, default=False
+        If True, also returns the lamb_obs by finding 'fiducial_filters_cent_waves.txt' at the same directory as the filter_list
+        If the cent_wave file can't be found, calculate by weight average of normalized response>0.1
+    
+    Returns
+    -------
+    filters : ndarray of shape (nfilt, 2, 2*half_length)
+        Full array of all the filters' wavelength coverage (micron) and response
+        For example, n_filter=i has wavelength filters[i][0] and response filters[i][1]
+    unique_wavelength : ndarray of shape (n_unique_wavs, )
+        Only return when return_unique_inverse=True
+        1-D array of unique wavelength points that are hstacked from all filters' wavelength grids
+    inverse_wavelength : ndarray of shape (n_total_wavs, )
+        Only return when return_unique_inverse=True
+        1-D mapping array of total hstacked wavelength grids to unique_wavelength with:
+        all_wavelength = unique_wavelength[inverse_wav]
+    conv_weights : ndarray of shape (nfilt, 2*half_length)
+        Only return when return_unique_inverse=True
+        weight for trapezoid integration that includes both wavelength grid spacing weights
+        and filter response weights, such that
+        np.trapezoid(flux * response) = np.sum(flux * conv_weights)
+    lamb_obs : ndarray of shape (nfilt, )
+        Only return when return_lamb_obs=True
+    '''
+    filter_dir = Path(filter_list).parent
+    filter_names = np.loadtxt(filter_list, dtype=str)
+    Nf = filter_names.shape[0]
+    filters = np.zeros((Nf, 2, half_length*2))
+
+    for i in range(Nf):
+        filter_path_name = filter_dir / Path(filter_names[i])
+        filt_i = np.loadtxt(filter_path_name)
+        wavelength_i = filt_i[:,0] * 1e-4   # convert from AA to micron
+        response_i = filt_i[:,1]
+        arg_peak = np.argmax(response_i)
+        if len(wavelength_i) < half_length*2:
+            wavelength_i1 = np.zeros(half_length*2)
+            response_i1 = np.zeros(half_length*2)
+            wavelength_i1[:len(wavelength_i)] = wavelength_i
+            dw = wavelength_i[-1] - wavelength_i[-2]
+            wavelength_i1[len(wavelength_i):] = wavelength_i[-1] + dw * np.arange(1, len(wavelength_i1)-len(wavelength_i)+1)
+            response_i1[:len(response_i)] = response_i
+        else:
+            if arg_peak - half_length < 0:
+                istart = 0
+                ifinish = half_length*2
+            elif arg_peak + half_length > len(wavelength_i):
+                ifinish = len(wavelength_i)
+                istart = ifinish - half_length*2
+            else:
+                istart = arg_peak - half_length
+                ifinish = arg_peak + half_length
+            wavelength_i1 = wavelength_i[istart:ifinish]
+            response_i1 = response_i[istart:ifinish]
+        tot_response_i1 = np.trapezoid(response_i1, wavelength_i1)
+        response_i1 = response_i1 / tot_response_i1    # divide by total response now so that when convolving SED with filters no normalization is needed
+        filters[i][0] = wavelength_i1
+        filters[i][1] = response_i1
+        # filters.append((wavelength_i1, response_i1))
+
+    # calculate convolution weights for filter convolution & integration
+    wavelengths = filters[:,0]
+    filter_responses = filters[:,1]
+    dx = np.diff(wavelengths, axis=1)
+    trap_weights = np.empty_like(wavelengths)
+
+    trap_weights[:, 0] = dx[:, 0] / 2
+    trap_weights[:, -1] = dx[:, -1] / 2
+    trap_weights[:, 1:-1] = (dx[:, :-1] + dx[:, 1:]) / 2
+    convolution_weights = trap_weights * filter_responses
+
+    # calculate unique wavelength points and the inverse map
+    all_wavelengths = np.concatenate([wavelengths[i] for i in range(Nf)])
+    unique_wavelength, inverse_wavelength = np.unique(all_wavelengths, return_inverse=True)
+
+    results = (filters,)
+
+    if return_unique_inverse:
+        results = results + (unique_wavelength, inverse_wavelength, convolution_weights,)
+
+    if return_lamb_obs:
+        try:
+            filter_central_wavelengths = filter_list.replace('fiducial_filters.txt', 'fiducial_filters_cent_waves.txt')
+            lamb_obs = np.genfromtxt(filter_central_wavelengths)[:,1]
+        except:
+            lamb_obs = np.zeros(Nf)
+            for i in range(Nf):
+                wav_i = filters[i][0]
+                res_i = filters[i][1] / np.max(filters[i][1])
+                mask = res_i > response_threshold
+                lamb_obs[i] = np.sum(wav_i[mask] * res_i[mask]) / np.sum(res_i[mask])
+        results = results + (lamb_obs,)
+
+    if not return_unique_inverse and not return_lamb_obs:
+        results = filters
+
+    return results
+
+
+# Read SPHEREx filters
+def read_filters_dict(filter_list, half_length=105, return_lamb_obs=False, response_threshold=0.1):
     '''
     Read SPHEREx official filters and return ndarray of (nfilt, 2, 2*half_length)
     
@@ -258,6 +377,30 @@ def read_filters(filter_list, half_length=105, return_lamb_obs=False, response_t
         filters[i][0] = wavelength_i1
         filters[i][1] = response_i1
         # filters.append((wavelength_i1, response_i1))
+
+    # calculate convolution weights for filter convolution & integration
+    wavelengths = filters[:,0]
+    filter_responses = filters[:,1]
+    dx = np.diff(wavelengths, axis=1)
+    trap_weights = np.empty_like(wavelengths)
+
+    trap_weights[:, 0] = dx[:, 0] / 2
+    trap_weights[:, -1] = dx[:, -1] / 2
+    trap_weights[:, 1:-1] = (dx[:, :-1] + dx[:, 1:]) / 2
+    convolution_weights = trap_weights * filter_responses
+
+    # calculate unique wavelength points and the inverse map
+    all_wavelengths = np.concatenate([wavelengths[i] for i in range(Nf)])
+    unique_wavelength, inverse_wavelength = np.unique(all_wavelengths, return_inverse=True)
+
+    results = {
+        "wavelength": filters[:,0],
+        "response": filters[:,1],
+        "convolution_weights": convolution_weights,
+        "unique_wavelength": unique_wavelength,
+        "inverse_wavelength": inverse_wavelength,
+    }
+
     if return_lamb_obs:
         try:
             filter_central_wavelengths = filter_list.replace('fiducial_filters.txt', 'fiducial_filters_cent_waves.txt')
@@ -269,9 +412,34 @@ def read_filters(filter_list, half_length=105, return_lamb_obs=False, response_t
                 res_i = filters[i][1] / np.max(filters[i][1])
                 mask = res_i > response_threshold
                 lamb_obs[i] = np.sum(wav_i[mask] * res_i[mask]) / np.sum(res_i[mask])
-        return filters, lamb_obs
+        # return filters, lamb_obs
+        results["lamb_obs"] = lamb_obs
     else:
-        return filters
+        # return filters
+        pass
+
+    return results
+
+# @njit(fastmath=True)
+def fast_convolve_filter(wl, flux, filters=None):
+    if filters is not None:
+        # wavelength = filters["wavelength"]
+        # response = filters["response"]
+        # unique_wavelength = filters["unique_wavelength"]
+        # inverse_wavelength = filters["inverse_wavelength"]
+        # conv_weights = filters["convolution_weights"]
+        wavelength = filters[0][:,0]
+        # response = filters[0][:,1]
+        unique_wls = filters[1]
+        inverse_wls = filters[2]
+        conv_weights = filters[3]
+        unique_flux_interp = np.interp(unique_wls, wl, flux)
+        flux_interps = unique_flux_interp[inverse_wls].reshape(wavelength.shape)
+        flux_conv = np.sum(flux_interps*conv_weights, axis=1)
+    else:
+        flux_conv = flux
+    return flux_conv
+
     
 @njit(fastmath=True)
 def convolve_filter(wl, flux, filters=None):

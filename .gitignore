@@ -2,3 +2,5 @@ __pycache__
 libs/__pycache__/
 random_samples/
 .DS_Store
+mcmc_outtputs/
+data/

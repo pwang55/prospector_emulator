@@ -1,0 +1,37 @@
+# configi file for make_pca.py
+
+
+# ============================================
+# PCA modes
+# ============================================
+
+npca: 20                                # number of PCA components
+batch_size: 2000
+scaling: False
+
+# ============================================
+# input file names
+# ============================================
+
+train_log10flux_filenames:
+  - random_samples/train/train_log10flux_x_mfrac_z3_100k.h5
+  - random_samples/train/train_log10flux_x_mfrac_z04_50k.h5
+
+valid_log10flux_filenames:
+  - random_samples/valid/valid_log10flux_x_mfrac_z3_10k.h5
+  - random_samples/valid/valid_log10flux_x_mfrac_z04_5k.h5
+
+test_log10flux_filenames:
+  - random_samples/test/test_log10flux_x_mfrac_z3_10k.h5
+  - random_samples/test/test_log10flux_x_mfrac_z04_5k.h5
+
+# ============================================
+# target file names and location
+# "Ndat" will be replaced by {n/1000}k if in the provided filename
+# ============================================
+output_dir: random_samples
+train_filename: train/train_x_coef_mfrac_Ndat.h5
+valid_filename: valid/valid_x_coef_mfrac_flux_Ndat.h5
+test_filename: test/test_x_coef_mfrac_flux_Ndat.h5
+pca_filename: pca/log10_flux_pca_modes_Ndat.npz
+

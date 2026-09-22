@@ -1,7 +1,7 @@
 # Configure file for prospector_mcmc.py
 Files:
   catalog: data/hotdog_l4_specz_collate_gals.parq
-  SPHERExRefID: 1663027938116763658
+  SPHERExRefID: 1713270706046763014
   filters: /Users/brianwang76/SPHEREx/SPHEREx-L4-Redshift-Pipeline/redshifts/data/FILTER/SPHEREx_306/fiducial_filters.txt
 
 emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/emulator.pt
@@ -9,21 +9,21 @@ emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_output
 MCMC:
   nwalkers: 32
   jitter: 1.0E-4
-  nsteps: 3000
-  discard: 1000
-  thin: 10
-  zprior: True
+  nsteps: 20000
+  discard: 3000
+  thin: 20
+  zprior: False
   parallel: False
   n_processes: 4
   verbose: True
 
 Outputs:
-  output_dir: mcmc_outputs
-  save_sampler: False
+  output_dir: mcmc_outputs/1713270706046763014
+  save_sampler: True
   sampler_filename: use_id    # specific text filename, or 'use_id' to save as pros_mcmc_{SPHERExRefID}.h5
   output_filename: use_id     # filename without extension, for both report (.yaml) and mcmc results (.npz) 
   save_plots: True
-  plots_dir: mcmc_outputs
+  plots_dir: mcmc_outputs/1713270706046763014
 
 
 # ============================================
@@ -46,11 +46,11 @@ prior_dicts:
     init: 0.1
     bounds: [0.0, 3.0]
     prior:
-      dist: loguniform1p
+      dist: uniform
 
   logmass:
     fixed:
-    init: 10.0
+    init: 11.0
     bounds: [7.5, 13.5]
     prior:
       dist: uniform

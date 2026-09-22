@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import yaml
 from numba import njit
+from scipy.sparse.linalg import eigsh
+import h5py
 
 
 # input and output data scaler class
@@ -49,7 +51,6 @@ class EmulatorScaler:
             'none',
             'standard',
             'coef0',
-            'use_coef0'
         }
         valid_mfrac_scalings = {
             'none',
@@ -130,7 +131,7 @@ class EmulatorScaler:
         elif self.coef_scaling == 'standard':
             return (coef - self.coef_mean) / self.coef_std
         
-        elif self.coef_scaling == 'coef0' or self.coef_scaling == 'use_coef0':
+        elif self.coef_scaling == 'coef0':
             return (coef - self.coef0_mean) / self.coef0_std
         
     def transform_mfrac(self, mfrac):
@@ -178,7 +179,7 @@ class EmulatorScaler:
         elif self.coef_scaling == 'standard':
             return coef_scaled * self.coef_std + self.coef_mean
         
-        elif self.coef_scaling == 'coef0' or self.coef_scaling == 'use_coef0':
+        elif self.coef_scaling == 'coef0':
             return coef_scaled * self.coef0_mean + self.coef0_mean
 
     def inverse_transform_mfrac(self, mfrac_scaled):
@@ -934,29 +935,59 @@ def get_device(requested="auto"):
     return torch.device("cpu")
 
 def load_data(filename):
-    dat = np.load(filename)
-    x = dat["x"]
-    coef =dat["coef"]
-    mfrac = dat["mfrac"]
-    train_param_keys = dat['train_param_keys'].tolist()
-    default_params = json.loads(dat["default_params"].item())
-    prior_dicts=json.loads(dat["prior_dicts"].item())
-    try:
-        flux = dat["flux"]
-    except:
-        flux = None
 
-    out_dict = {
-        "x": x,
-        "coef": coef,
-        "mfrac": mfrac,
-        "flux": flux,
-        "train_param_keys": train_param_keys,
-        "default_params": default_params,
-        "prior_dicts": prior_dicts
-    }
-    return out_dict
-    # return x_test, coef_test, mfrac_test, flux
+    if filename.split('.')[-1] == "npz":
+        dat = np.load(filename)
+        x = dat["x"]
+        coef = dat["coef"]
+        mfrac = dat["mfrac"]
+        train_param_keys = dat['train_param_keys'].tolist()
+        default_params = json.loads(dat["default_params"].item())
+        prior_dicts=json.loads(dat["prior_dicts"].item())
+        try:
+            flux = dat["flux"]
+        except:
+            flux = None
+
+        out_dict = {
+            "x": x,
+            "coef": coef,
+            "mfrac": mfrac,
+            "flux": flux,
+            "train_param_keys": train_param_keys,
+            "default_params": default_params,
+            "prior_dicts": prior_dicts
+        }
+        return out_dict
+        # return x_test, coef_test, mfrac_test, flux
+    elif filename.split('.')[-1] == "h5":
+        with h5py.File(filename, "r") as dat:
+            lamb_obs = dat["lamb_obs"][()]
+            x = dat["x"][()]
+            coef = dat["coef"][()]
+            flux_fiducial = dat["flux_fiducial"][()]
+            mfrac = dat["mfrac"][()]
+            scale = dat["scale"][()]
+            train_param_keys = dat.attrs["train_param_keys"].tolist()
+            default_params = json.loads(dat.attrs["default_params"])
+            prior_dicts = json.loads(dat.attrs["prior_dicts"])
+            try:
+                flux = 10**(dat["log10flux"][()])
+            except:
+                flux = None
+        out_dict = {
+            "x": x,
+            "lamb_obs": lamb_obs,
+            "coef": coef,
+            "mfrac": mfrac,
+            "flux": flux,
+            "flux_fiducial": flux_fiducial,
+            "scale": scale,
+            "train_param_keys": train_param_keys,
+            "default_params": default_params,
+            "prior_dicts": prior_dicts
+        }
+        return out_dict
     
 def get_activation(name):
     name = name.lower()
@@ -1247,16 +1278,18 @@ def fit_emulator(
             print("\033[1A\033[2K", end="")
 
             print(
-                f"Best epoch:\t{early_stopping.best_epoch}"
-                f"\tvalid={early_stopping.best_loss:.6e}"
+                f"Best epoch:\t{early_stopping.best_epoch} | "
+                f"valid={early_stopping.best_loss:.5e}"
                 # f"{early_stopping.epochs_without_improvement} epochs without improvement"
                 # f"(epoch {early_stopping.best_epoch})"
             )
 
             print(
-                f"Latest epoch:\t{epoch}"
-                f"\tvalid={valid_metrics[monitor]:.6e}"
-                f"\ttrain={train_metrics[monitor]:.6e}"
+                f"Latest epoch:\t{epoch} | "
+                f"valid={valid_metrics[monitor]:.5e} | "
+                f"coef={valid_metrics['coef']:.5e} | "
+                f"mfrac={valid_metrics['mfrac']:.5e} | "
+                f"train={train_metrics[monitor]:.5e}"
             )
 
         # if verbose:
@@ -1288,7 +1321,7 @@ def fit_emulator(
         model=model,
         device=device,
     )
-
+    print("\033[?7h\033[0m")
     return history
 
 # prediction function for full set of test data that has gradient tracking turned off

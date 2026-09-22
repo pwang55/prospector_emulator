@@ -12,6 +12,8 @@ Notes:
     - to check available override keywords, use -h
 """
 # import os
+
+# os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 import pandas as pd
 import pyarrow.dataset as ds
@@ -274,6 +276,8 @@ def main():
     if output_filename == 'use_id':
         output_filename = f"emulator_mcmc_results_report_{spherex_id}.h5"
 
+    sampler_filename = output_dir + "/" + sampler_filename
+
     if verbose:
         print("Read input catalog...")
     cat = dlibs.catalog_dataset(filename=filename)
@@ -297,8 +301,8 @@ def main():
         verbose=args.verbose,
         output_dir=args.output_dir,
         save_sampler=args.save_sampler,
-        sampler_filename=args.sampler_filename,
-        output_filename=args.output_filename,
+        sampler_filename=sampler_filename,
+        output_filename=output_filename,
         save_plots=args.save_plots,
         plots_dir=args.plots_dir,
     )
@@ -319,7 +323,7 @@ def main():
         cat.spec,
         cat.err,
         redshift=cat.zphot,
-        redshift_sigma=(cat.zphot_u68-cat.zphot_l68)/2,
+        redshift_err=(cat.zphot_u68-cat.zphot_l68)/2,
         results=True,
     )
     results = emcmc_obj.results

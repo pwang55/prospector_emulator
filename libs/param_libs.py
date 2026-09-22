@@ -5,6 +5,7 @@ from scipy.stats import t, truncnorm
 import copy
 
 # TODO add log10_duste_gamma, log10_fagn defaults, log10_agn_tau
+# TODO add default values to data_creation_config.yaml
 # default myparam values
 emu_params_continuity_sfh = {'zred': 0.1,
             'logmass': 10,

@@ -240,7 +240,7 @@ def create_logprior_func(config):
     elif dist == "loguniform1p":
         if lo <= -1:
             raise ValueError("loguniform1p requires lower bound > -1")
-        return partial(loguniform1p_logpdf, a=lo, b=hi)
+        return partial(loguniform1p_logpdf, low=lo, high=hi)
 
     elif dist == "truncnorm":
         loc = prior["loc"]
@@ -685,6 +685,7 @@ def plot_sed_sfh(lamb_obs,
                 axi.plot([],[])
                 axi.plot([],[])
                 for key, each_phot_dict in external_phots.items():
+                    each_phot_dict['flux_error'][each_phot_dict['flux_error']<0] = 0.0   # TEMP
                     axi.errorbar(each_phot_dict['wavelength'],
                                     each_phot_dict['flux'],
                                     each_phot_dict['flux_error'],
@@ -973,7 +974,7 @@ class emulator_mcmc:
             return None
 
         if isinstance(filters, (str, Path)):
-            return dlibs.read_filters(filters)
+            return dlibs.read_filters(filters, return_unique_inverse=True)
 
         return filters
 
@@ -1350,7 +1351,8 @@ class emulator_mcmc:
                 raise ValueError("lbs and filters cannot both be None!")
             flux_model_conv = np.interp(flux_lbs, lbs_model_shifted, flux_model)
         else:
-            flux_model_conv = dlibs.convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
+            # flux_model_conv = dlibs.convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
+            flux_model_conv = dlibs.fast_convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
 
         if flux_error is None:
             ll = -0.5 * np.sum((flux_model_conv-flux)**2)
@@ -1376,6 +1378,7 @@ class emulator_mcmc:
             discard=None,
             thin=None,
             prior=None,
+            output_dir=None,
             save_sampler=None,
             sampler_filename=None,
             verbose=None,
@@ -1399,6 +1402,7 @@ class emulator_mcmc:
         discard = self.discard if discard is None else discard
         thin = self.thin if thin is None else thin
 
+        output_dir = self.output_dir if output_dir is None else output_dir
         save_sampler = self.save_sampler if save_sampler is None else save_sampler
         sampler_filename = self.sampler_filename if sampler_filename is None else sampler_filename
         verbose = self.verbose if verbose is None else verbose
@@ -1439,6 +1443,8 @@ class emulator_mcmc:
         initial_pos = initial + jitter * np.random.randn(nwalkers, self.ndim_mcmc)
 
         if save_sampler:
+            output_dir_path = Path(output_dir)
+            output_dir_path.mkdir(parents=True, exist_ok=True)
             backend = emcee.backends.HDFBackend(sampler_filename)
             backend.reset(nwalkers, self.ndim_mcmc)
         else:
@@ -1508,7 +1514,8 @@ class emulator_mcmc:
 
         lbs_med = prediction_med["lbs"] * (1+zred_med)  # prediction lbs is rest frame
         flux_med = prediction_med["flux"]
-        flux_med_conv = dlibs.convolve_filter(lbs_med, flux_med, filters=self.filters)
+        # flux_med_conv = dlibs.convolve_filter(lbs_med, flux_med, filters=self.filters)
+        flux_med_conv = dlibs.fast_convolve_filter(lbs_med, flux_med, filters=self.filters)
         mfrac_med = mfracs_percentiles[1]
 
         # save some med results for easy access

@@ -1,7 +1,7 @@
 """
 
 Usage:
-    $ python train_emulator.py --config training.yaml
+    $ python train_emulator.py --config train_config.yaml
 
 """
 import numpy as np
