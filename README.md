@@ -36,14 +36,23 @@ This script accepts multiple file inputs and will combine them together, creatin
 
 ## Train an emulator
 
-Once you have a set of train/test data (or train/valid/test), edit `configs/train_config.yaml` for training related settings, then
+### PCA high-resolution SED emulator
 
+Once you have a set of train/test data (or train/valid/test), edit `configs/train_config.yaml` for training related settings, then
 
 > $ python train_emulator.py -c configs/train_config.yaml
 
-
 You can use CLI arguments to override the config file; to check available options, run  
 `python train_emulator.py -h`
+
+This code creates an `output_dir` that contains all the outputs from the script.
+
+### Direct fiducial flux emulator
+
+> $ python train_flux_emulator.py -c configs/train_flux_emulator.yaml
+
+You can use CLI arguments to override the config file; to check available options, run  
+`python train_flux_emulator.py -h`
 
 This code creates an `output_dir` that contains all the outputs from the script.
 
