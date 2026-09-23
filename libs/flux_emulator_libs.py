@@ -9,81 +9,75 @@ import json
 # from scipy.sparse.linalg import eigsh
 import h5py
 
-
 # input and output data scaler class
-class EmulatorScaler:
+class FluxEmulatorScaler:
     """
-    Preprocessing for an SPS emulator.
+    Preprocessing for an flux SPS emulator.
 
-    Input X:
-        Standardize every feature independently.
+    x:
 
-    PCA coefficients:
-        Compute one mean and one standard deviation from coef[:, 0],
-        then apply that same scalar transformation to every coefficient.
+    flux:
 
     mfrac:
-        Standardize independently.
 
-    Fit this object on the training data only.
     """
 
     def __init__(self, eps=1e-12):
         self.eps = float(eps)
         self.x_mean = None
         self.x_std = None
-        self.coef_mean = None
-        self.coef_std = None
+        self.flux_mean = None
+        self.flux_std = None
         self.mfrac_mean = None
         self.mfrac_std = None
 
-    def fit(self, 
-            x, 
-            coef, 
-            mfrac, 
-            coef_scaling='none',
+    def fit(self,
+            x,
+            flux,
+            mfrac,
+            flux_scaling='standard',
             mfrac_scaling='standard'):
         x = np.asarray(x, dtype=np.float64)
-        coef = np.asarray(coef, dtype=np.float64)
+        flux = np.asarray(flux, dtype=np.float64)
         mfrac = np.asarray(mfrac, dtype=np.float64)
 
-        valid_coef_scalings = {
+        valid_flux_scalings = {
             'none',
             'standard',
-            'coef0',
+            'global_standard',
+            'log10_none',
+            'log10_standard',
+            'log10_global_standard'
         }
         valid_mfrac_scalings = {
             'none',
             'standard',
-            'match_coef0'
         }
-        if coef_scaling not in valid_coef_scalings:
-            raise ValueError(f'coef_scaling must be one of {valid_coef_scalings}')
+        if flux_scaling not in valid_flux_scalings:
+            raise ValueError(f'flux_scaling must be one of {valid_flux_scalings}')
         if mfrac_scaling not in valid_mfrac_scalings:
             raise ValueError(f'mfrac_scaling must be one of {valid_mfrac_scalings}')
-        if mfrac_scaling == 'match_coef0' and coef_scaling != 'none':
-            raise ValueError("mfrac_scaling='match_coef0' can only be used when coef_scaling='none'")
 
-        self.coef_scaling = coef_scaling
+        self.flux_scaling = flux_scaling
         self.mfrac_scaling = mfrac_scaling
 
         if x.ndim != 2:
             raise ValueError("x must have shape (ndata, nfeatures).")
-        if coef.ndim != 2:
-            raise ValueError("coef must have shape (ndata, ncoefs).")
+        if flux.ndim != 2:
+            raise ValueError("flux must have shape (ndata, nfilts).")
         if mfrac.ndim != 1:
             raise ValueError("mfrac must have shape (ndata,).")
 
         ndata = x.shape[0]
 
-        if coef.shape[0] != ndata:
-            raise ValueError("x and coef must contain the same number of samples.")
+        if flux.shape[0] != ndata:
+            raise ValueError("x and flux must contain the same number of samples.")
         if mfrac.shape[0] != ndata:
             raise ValueError("x and mfrac must contain the same number of samples.")
         if not np.all(np.isfinite(x)):
             raise ValueError("x contains NaN or infinity.")
-        if not np.all(np.isfinite(coef)):
-            raise ValueError("coef contains NaN or infinity.")
+        if not np.all(np.isfinite(flux)):
+            raise ValueError("flux contains NaN or infinity.")
         if not np.all(np.isfinite(mfrac)):
             raise ValueError("mfrac contains NaN or infinity.")
 
@@ -92,26 +86,80 @@ class EmulatorScaler:
         self.x_std = np.std(x, axis=0)
 
         constant_features = self.x_std < self.eps
-
         if np.any(constant_features):
             indices = np.flatnonzero(constant_features)
             raise ValueError("The following input features have nearly zero "f"standard deviation: {indices.tolist()}")
 
-        self.coef_mean = np.mean(coef, axis=0)
-        self.coef_std = np.std(coef, axis=0)
+        # flux scaling
+        # self.flux_mean = np.mean(flux, axis=0)
+        # self.flux_std = np.std(flux, axis=0)
 
-        # One shared coefficient mean/std, derived from coef[:, 0]
-        self.coef0_mean = self.coef_mean[0]
-        self.coef0_std = self.coef_std[0]
+        if self.flux_scaling == "none" or self.flux_scaling == "log10_none":
+            self.flux_mean = None
+            self.flux_std = None
 
-        if self.coef0_std < self.eps:
-            raise ValueError("The standard deviation of coef[:, 0] is too small.")
+        elif self.flux_scaling == "standard":
+            # Per-wavelength statistics in LINEAR flux space.
+            self.flux_mean = np.mean(flux, axis=0)
+            self.flux_std = np.std(flux, axis=0)
+
+            bad_wavelengths = self.flux_std < self.eps
+
+            if np.any(bad_wavelengths):
+                indices = np.flatnonzero(bad_wavelengths)
+                raise ValueError(f"The following wavelengths have nearly zero flux standard deviation: {indices.tolist()}")
+
+        elif self.flux_scaling == "global_standard":
+            # One shared mean/std for all wavelengths and samples.
+            self.flux_mean = float(np.mean(flux))
+            self.flux_std = float(np.std(flux))
+
+            if self.flux_std < self.eps:
+                raise ValueError("The global flux standard deviation is too small.")
+
+        elif self.flux_scaling == "log10_standard":
+            # log10_standard is defined entirely in log10-flux space.
+            #
+            # IMPORTANT:
+            # flux_mean and flux_std below therefore refer to
+            # statistics of log10(flux), not statistics of flux.
+
+            if np.any(flux <= 0.0):
+                raise ValueError("flux must be strictly positive when flux_scaling='log10_standard'.")
+            log10_flux = np.log10(flux)
+
+            self.flux_mean = np.mean(log10_flux, axis=0)
+            self.flux_std = np.std(log10_flux, axis=0)
+
+            bad_wavelengths = self.flux_std < self.eps
+
+            if np.any(bad_wavelengths):
+                indices = np.flatnonzero(bad_wavelengths)
+                raise ValueError(f"The following wavelengths have nearly zero log10-flux standard deviation: {indices.tolist()}")
+
+        elif self.flux_scaling == "log10_global_standard":
+            # log10_global_standard is defined entirely in log10-flux space.
+            #
+            # IMPORTANT:
+            # flux_mean and flux_std below therefore refer to
+            # statistics of log10(flux), not statistics of flux.
+
+            if np.any(flux <= 0.0):
+                raise ValueError("flux must be strictly positive when flux_scaling='log10_global_standard'.")
+
+            log10_flux = np.log10(flux)
+
+            self.flux_mean = float(np.mean(log10_flux))
+            self.flux_std = float(np.std(log10_flux))
+
+            if self.flux_std < self.eps:
+                raise ValueError("The global log10flux standard deviation is too small.")
 
         # Separate mfrac scaling
         self.mfrac_mean = float(np.mean(mfrac))
         self.mfrac_std = float(np.std(mfrac))
 
-        if self.mfrac_std < self.eps:
+        if self.mfrac_std < self.eps and self.mfrac_scaling == 'standard':
             raise ValueError("The standard deviation of mfrac is too small.")
 
         return self
@@ -121,19 +169,45 @@ class EmulatorScaler:
         x = np.asarray(x, dtype=np.float64)
         return (x - self.x_mean) / self.x_std
 
-    def transform_coef(self, coef):
+    def transform_flux(self, flux):
         self._check_fitted()
-        coef = np.asarray(coef, dtype=np.float64)
+        flux = np.asarray(flux, dtype=np.float64)
 
-        if self.coef_scaling == 'none':
-            return coef
-        
-        elif self.coef_scaling == 'standard':
-            return (coef - self.coef_mean) / self.coef_std
-        
-        elif self.coef_scaling == 'coef0':
-            return (coef - self.coef0_mean) / self.coef0_std
-        
+        if self.flux_scaling == "none":
+            return flux
+
+        elif self.flux_scaling == "standard":
+            return (
+                (flux - self.flux_mean)
+                / self.flux_std
+            )
+
+        elif self.flux_scaling == "global_standard":
+            return (
+                (flux - self.flux_mean)
+                / self.flux_std
+            )
+
+        elif self.flux_scaling == "log10_none":
+            if np.any(flux <= 0.0):
+                raise ValueError("flux must be strictly positive when flux_scaling='log10_none'.")
+            log10_flux = np.log10(flux)
+            return log10_flux
+
+        elif self.flux_scaling == "log10_standard":
+            if np.any(flux <= 0.0):
+                raise ValueError("flux must be strictly positive when flux_scaling='log10_standard'.")
+
+            log10_flux = np.log10(flux)
+            return ((log10_flux - self.flux_mean) / self.flux_std)
+
+        elif self.flux_scaling == "log10_global_standard":
+            if np.any(flux <= 0.0):
+                raise ValueError("flux must be strictly positive when flux_scaling='log10_global_standard'.")
+
+            log10_flux = np.log10(flux)
+            return ((log10_flux - self.flux_mean) / self.flux_std)
+    
     def transform_mfrac(self, mfrac):
         self._check_fitted()
         mfrac = np.asarray(mfrac, dtype=np.float64)
@@ -144,43 +218,53 @@ class EmulatorScaler:
         elif self.mfrac_scaling == 'standard':
             return (mfrac - self.mfrac_mean) / self.mfrac_std
 
-        elif self.mfrac_scaling == 'match_coef0':
-            return (mfrac - self.mfrac_mean) / self.mfrac_std * self.coef0_std + self.coef0_mean
-
-    def transform(self, x, coef, mfrac):
+    def transform(self, x, flux, mfrac):
         return (
             self.transform_x(x),
-            self.transform_coef(coef),
+            self.transform_flux(flux),
             self.transform_mfrac(mfrac),
         )
 
     def fit_transform(self, 
                       x, 
-                      coef, 
+                      flux, 
                       mfrac,
-                      coef_scaling='none',
+                      flux_scaling='standard',
                       mfrac_scaling='standard'):
-        self.fit(x, coef, mfrac, coef_scaling=coef_scaling, mfrac_scaling=mfrac_scaling)
-        return self.transform(x, coef, mfrac)
-
+        self.fit(x, flux, mfrac, flux_scaling=flux_scaling, mfrac_scaling=mfrac_scaling)
+        return self.transform(x, flux, mfrac)
+    
     def inverse_transform_x(self, x_scaled):
         self._check_fitted()
         x_scaled = np.asarray(x_scaled, dtype=np.float64)
 
         return (x_scaled * self.x_std + self.x_mean)
 
-    def inverse_transform_coef(self, coef_scaled):
-        self._check_fitted()
-        coef_scaled = np.asarray(coef_scaled, dtype=np.float64)
 
-        if self.coef_scaling == 'none':
-            return coef_scaled
-        
-        elif self.coef_scaling == 'standard':
-            return coef_scaled * self.coef_std + self.coef_mean
-        
-        elif self.coef_scaling == 'coef0':
-            return coef_scaled * self.coef0_mean + self.coef0_mean
+    def inverse_transform_flux(self, flux_scaled):
+        self._check_fitted()
+
+        flux_scaled = np.asarray(flux_scaled, dtype=np.float64)
+
+        if self.flux_scaling == "none":
+            return flux_scaled
+
+        elif self.flux_scaling == "standard":
+            return (flux_scaled * self.flux_std + self.flux_mean)
+
+        elif self.flux_scaling == "global_standard":
+            return (flux_scaled * self.flux_std + self.flux_mean)
+
+        elif self.flux_scaling == "log10_none":
+            log10_flux = flux_scaled
+            return 10.0 ** log10_flux
+        elif self.flux_scaling == "log10_standard":
+            log10_flux = (flux_scaled * self.flux_std + self.flux_mean)
+            return 10.0 ** log10_flux
+
+        elif self.flux_scaling == "log10_global_standard":
+            log10_flux = (flux_scaled * self.flux_std + self.flux_mean)
+            return 10.0 ** log10_flux
 
     def inverse_transform_mfrac(self, mfrac_scaled):
         self._check_fitted()
@@ -191,9 +275,6 @@ class EmulatorScaler:
 
         elif self.mfrac_scaling == 'standard':
             return mfrac_scaled * self.mfrac_std + self.mfrac_mean
-
-        elif self.mfrac_scaling == 'match_coef0':
-            return (mfrac_scaled - self.coef0_mean) / self.coef0_std * self.mfrac_std + self.mfrac_mean
 
     def _check_fitted(self):
         if self.x_mean is None:
@@ -209,16 +290,14 @@ class EmulatorScaler:
         return {
             "eps": self.eps,
 
-            "coef_scaling": self.coef_scaling,
+            "flux_scaling": self.flux_scaling,
             "mfrac_scaling": self.mfrac_scaling,
 
             "x_mean": self.x_mean,
             "x_std": self.x_std,
 
-            "coef_mean": self.coef_mean,
-            "coef_std": self.coef_std,
-            "coef0_mean": self.coef0_mean,
-            "coef0_std": self.coef0_std,
+            "flux_mean": self.flux_mean,
+            "flux_std": self.flux_std,
 
             "mfrac_mean": self.mfrac_mean,
             "mfrac_std": self.mfrac_std,
@@ -227,20 +306,18 @@ class EmulatorScaler:
     @classmethod
     def from_state_dict(cls, state):
         """
-        Reconstruct a fitted EmulatorScaler from a saved state dictionary.
+        Reconstruct a fitted FluxEmulatorScaler from a saved state dictionary.
         """
         scaler = cls(eps=state["eps"])
 
-        scaler.coef_scaling = state["coef_scaling"]
+        scaler.flux_scaling = state["flux_scaling"]
         scaler.mfrac_scaling = state["mfrac_scaling"]
 
         scaler.x_mean = state["x_mean"]
         scaler.x_std = state["x_std"]
 
-        scaler.coef_mean = state["coef_mean"]
-        scaler.coef_std = state["coef_std"]
-        scaler.coef0_mean = state["coef0_mean"]
-        scaler.coef0_std = state["coef0_std"]
+        scaler.flux_mean = state["flux_mean"]
+        scaler.flux_std = state["flux_std"]
 
         scaler.mfrac_mean = state["mfrac_mean"]
         scaler.mfrac_std = state["mfrac_std"]
@@ -248,17 +325,16 @@ class EmulatorScaler:
         return scaler
 
 
-
 # Dataset class
-class SPSDataset(Dataset):
+class FluxSPSDataset(Dataset):
     def __init__(
         self,
         x_scaled,
-        coef_scaled,
+        flux_scaled,
         mfrac_scaled,
     ):
         self.x = torch.as_tensor(x_scaled, dtype=torch.float32)
-        self.coef = torch.as_tensor(coef_scaled, dtype=torch.float32)
+        self.flux = torch.as_tensor(flux_scaled, dtype=torch.float32)
         self.mfrac = torch.as_tensor(mfrac_scaled, dtype=torch.float32)
 
         ndata = self.x.shape[0]
@@ -266,34 +342,36 @@ class SPSDataset(Dataset):
         if self.x.ndim != 2:
             raise ValueError("x must have shape (ndata, nfeatures).")
 
-        if self.coef.ndim != 2:
-            raise ValueError("coef must have shape (ndata, ncoefs).")
+        if self.flux.ndim != 2:
+            raise ValueError("flux must have shape (ndata, nfilts).")
 
         if self.mfrac.ndim != 1:
             raise ValueError("mfrac must have shape (ndata,).")
 
-        if self.coef.shape[0] != ndata:
+        if self.flux.shape[0] != ndata:
             raise ValueError("x and c have different ndata")
 
     def __len__(self):
         return self.x.shape[0]
 
     def __getitem__(self, index):
-        # return self.x[index], self.coef[index], self.mfrac[index]
+        # return self.x[index], self.flux[index], self.mfrac[index]
         return {
             'x': self.x[index], 
-            'coef': self.coef[index], 
+            'flux': self.flux[index], 
             'mfrac': self.mfrac[index]
         }
 
+
+
 # Class to create a full emulator architecture
-class SPSEmulator(nn.Module):
+class FluxSPSEmulator(nn.Module):
     def __init__(
         self,
         n_features,
-        n_coefs,
+        n_fluxes,
         shared_dims=(512, 512, 512, 512),
-        coef_head_dims=(),
+        flux_head_dims=(),
         mfrac_head_dims=(),
         activation="gelu",
         dropout=0.0,
@@ -302,14 +380,14 @@ class SPSEmulator(nn.Module):
         super().__init__()
 
         self.n_features = int(n_features)
-        self.n_coefs = int(n_coefs)
+        self.n_fluxes = int(n_fluxes)
         self.predict_mfrac = predict_mfrac
 
         self.config = {
             "n_features": self.n_features,
-            "n_coefs": self.n_coefs,
+            "n_fluxes": self.n_fluxes,
             "shared_dims": tuple(shared_dims),
-            "coef_head_dims": tuple(coef_head_dims),
+            "flux_head_dims": tuple(flux_head_dims),
             "mfrac_head_dims": tuple(mfrac_head_dims),
             "activation": str(activation),
             "dropout": float(dropout),
@@ -323,16 +401,16 @@ class SPSEmulator(nn.Module):
             dropout=dropout,
         )
 
-        self.coef_head_hidden, coef_hidden_dim = (
+        self.flux_head_hidden, flux_hidden_dim = (
             make_hidden_mlp(
                 input_dim=shared_output_dim,
-                hidden_dims=coef_head_dims,
+                hidden_dims=flux_head_dims,
                 activation=activation,
                 dropout=dropout,
             )
         )
 
-        self.coef_output = nn.Linear(coef_hidden_dim, self.n_coefs)
+        self.flux_output = nn.Linear(flux_hidden_dim, self.n_fluxes)
 
         if self.predict_mfrac:
             self.mfrac_head_hidden, mfrac_hidden_dim = (
@@ -347,9 +425,9 @@ class SPSEmulator(nn.Module):
 
     def forward(self, x):
         shared_features = self.shared(x)
-        coef_features = self.coef_head_hidden(shared_features)
-        coef_pred = self.coef_output(coef_features)
-        output = {'coef': coef_pred}
+        flux_features = self.flux_head_hidden(shared_features)
+        flux_pred = self.flux_output(flux_features)
+        output = {'flux': flux_pred}
 
         if self.predict_mfrac:
             mfrac_features = self.mfrac_head_hidden(shared_features)
@@ -358,354 +436,482 @@ class SPSEmulator(nn.Module):
 
         return output
 
-# Loss function class
-class EmulatorLoss(nn.Module):
+    
+class FluxEmulatorLoss(nn.Module):
     """
-    Loss for PCA coefficients and mfrac.
+    Loss for a direct-flux SPS emulator.
 
-    Available coefficient losses
-    -----------------------------
-    "mse"
-    "rmse"
-    "mae"
-    "logflux_mse"
-    "logflux_mae"
-    "flux_mse"
-    "flux_mae"
-    "relative_flux_mse"
-    "relative_flux_mae"
-
-    Available mfrac losses
-    ----------------------
-    "mse"
-    "rmse"
-    "mae"
-
-    Total loss
+    Parameters
     ----------
-    total = coefficient_loss
-          + mfrac_lambda * mfrac_loss
+    flux_loss : {"mse", "mae"}
+        Loss function used for flux.
+
+    flux_loss_space : {"scaled", "log10", "linear"}
+        Space in which the flux loss is calculated.
+
+        "scaled"
+            Calculate the loss directly on the output of FluxEmulatorScaler,
+            regardless of how they were scaled.
+
+        "log10"
+            Convert the scaled representation into unscaled
+            log10(flux), then calculate the loss there.
+
+        "linear"
+            Convert the scaled representation into physical
+            linear flux, then calculate the loss there.
+
+    flux_scaling : {
+        "none",
+        "standard",
+        "global_standard",
+        "log10_none",
+        "log10_standard",
+        "log10_global_standard"
+    }
+        Scaling/transformation used by FluxEmulatorScaler.
+
+    flux_scale_mean : scalar, array-like, or None
+        Mean stored by FluxEmulatorScaler.
+
+    flux_scale_std : scalar, array-like, or None
+        Standard deviation stored by FluxEmulatorScaler.
+
+    mfrac_loss : {"mse", "mae"}
+        Loss function used for mfrac.
+
+    mfrac_lambda : float
+        Relative weight of the mfrac loss.
+        total = flux_loss + mfrac_lambda * mfrac_loss
+
+    wavelength_weights : array-like or None
+        Optional wavelength-dependent loss weights.
+
+    max_log10_flux : float or None
+        Optional upper clipping threshold before converting
+        log10 flux into linear flux.
+
+        Normally None.
     """
 
     def __init__(
         self,
-        coef_loss="mse",
+        flux_loss="mse",
+        flux_loss_space="scaled",
+        flux_scaling="standard",
+        flux_scale_mean=None,
+        flux_scale_std=None,
         mfrac_loss="mse",
-        mfrac_lambda=1.0,
-        pca_modes=None,
-        pca_mean=None,
-        coef_scale_mean=0.0,
-        coef_scale_std=1.0,
-        relative_flux_eps=1e-8,
-        rmse_eps=1e-12,
-        max_log10_flux=None,
+        mfrac_lambda=0.01,
         wavelength_weights=None,
+        max_log10_flux=None,
     ):
         super().__init__()
 
-        self.coef_loss_name = coef_loss.lower()
+        self.flux_loss_name = flux_loss.lower()
+        self.flux_loss_space = flux_loss_space.lower()
+        self.flux_scaling = flux_scaling.lower()
+
         self.mfrac_loss_name = mfrac_loss.lower()
         self.mfrac_lambda = float(mfrac_lambda)
-        self.relative_flux_eps = float(relative_flux_eps)
-        self.max_log10_flux = max_log10_flux
-        self.rmse_eps = rmse_eps
 
-        valid_coef_losses = {
+        self.max_log10_flux = max_log10_flux
+
+        # =============================================================
+        # Validate options
+        # =============================================================
+
+        valid_flux_losses = {
             "mse",
-            "rmse",
             "mae",
-            "l1",
-            "logflux_mse",
-            "logflux_mae",
-            "flux_mse",
-            "flux_mae",
-            "relative_flux_mse",
-            "relative_flux_mae",
+        }
+
+        valid_flux_loss_spaces = {
+            "scaled",
+            "log10",
+            "linear",
+        }
+
+        valid_flux_scalings = {
+            "none",
+            "standard",
+            "global_standard",
+            "log10_none",
+            "log10_standard",
+            "log10_global_standard",
         }
 
         valid_mfrac_losses = {
             "mse",
-            "rmse",
             "mae",
-            "l1",
         }
 
-        if self.coef_loss_name not in valid_coef_losses:
-            raise ValueError("Unknown coefficient loss f{self.coef_loss_name!r}. Available options: {valid_coef_losses}")
+        if self.flux_loss_name not in valid_flux_losses:
+            raise ValueError(f"Unknown flux_loss {self.flux_loss_name!r}. Available options: {valid_flux_losses}")
+
+        if self.flux_loss_space not in valid_flux_loss_spaces:
+            raise ValueError(f"Unknown flux_loss_space {self.flux_loss_space!r}. Available options: {valid_flux_loss_spaces}")
+
+        if self.flux_scaling not in valid_flux_scalings:
+            raise ValueError(f"Unknown flux_scaling {self.flux_scaling!r}. Available options: {valid_flux_scalings}")
 
         if self.mfrac_loss_name not in valid_mfrac_losses:
-            raise ValueError("Unknown mfrac loss {self.mfrac_loss_name!r}. Available options: {valid_mfrac_losses}")
+            raise ValueError(f"Unknown mfrac_loss {self.mfrac_loss_name!r}. Available options: {valid_mfrac_losses}")
 
         if self.mfrac_lambda < 0.0:
             raise ValueError("mfrac_lambda must be nonnegative.")
 
-        if self.relative_flux_eps <= 0.0:
-            raise ValueError("relative_flux_eps must be positive.")
+        # =============================================================
+        # Determine whether scaler statistics are required
+        # =============================================================
 
-        # These are nontrainable tensors that should move
-        # automatically when criterion.to(device) is called.
-        self.register_buffer(
-            "coef_scale_mean",
-            torch.as_tensor(
-                coef_scale_mean,
-                dtype=torch.float32,
-            ),
-        )
+        scaling_uses_stats = self.flux_scaling in {
+            "standard",
+            "global_standard",
+            "log10_standard",
+            "log10_global_standard",
+        }
 
-        self.register_buffer(
-            "coef_scale_std",
-            torch.as_tensor(
-                coef_scale_std,
-                dtype=torch.float32,
-            ),
-        )
+        # If loss is calculated directly in scaled space,
+        # the scaler statistics are not needed.
+        #
+        # If loss is requested in log10 or linear space,
+        # scaled representations must first be undone.
+        if (
+            self.flux_loss_space != "scaled"
+            and scaling_uses_stats
+        ):
+            if flux_scale_mean is None:
+                raise ValueError(
+                    "flux_scale_mean is required when "
+                    f"flux_loss_space={self.flux_loss_space!r} "
+                    "and the chosen flux_scaling uses "
+                    "mean/std scaling."
+                )
 
-        if pca_modes is None:
-            self.pca_modes = None
+            if flux_scale_std is None:
+                raise ValueError(
+                    "flux_scale_std is required when "
+                    f"flux_loss_space={self.flux_loss_space!r} "
+                    "and the chosen flux_scaling uses "
+                    "mean/std scaling."
+                )
+
+        # =============================================================
+        # Store scaler statistics as buffers
+        # =============================================================
+
+        if flux_scale_mean is None:
+            self.flux_scale_mean = None
+
         else:
             self.register_buffer(
-                "pca_modes",
-                torch.as_tensor(
-                    pca_modes,
-                    dtype=torch.float32,
-                ),
-            )
+                "flux_scale_mean",
+                torch.as_tensor(flux_scale_mean, dtype=torch.float32)
+                )
 
-        if pca_mean is None:
-            self.pca_mean = None
+        if flux_scale_std is None:
+            self.flux_scale_std = None
+
         else:
             self.register_buffer(
-                "pca_mean",
-                torch.as_tensor(
-                    pca_mean,
-                    dtype=torch.float32,
-                ),
+                "flux_scale_std",
+                torch.as_tensor(flux_scale_std, dtype=torch.float32)
             )
+
+        # =============================================================
+        # Wavelength weights
+        # =============================================================
 
         if wavelength_weights is None:
             self.wavelength_weights = None
+
         else:
-            wavelength_weights = torch.as_tensor(
-                wavelength_weights,
-                dtype=torch.float32,
-            )
-
+            wavelength_weights = torch.as_tensor(wavelength_weights, dtype=torch.float32)
             if wavelength_weights.ndim != 1:
-                raise ValueError(
-                    "wavelength_weights must have shape "
-                    "(nwavelength,)."
-                )
+                raise ValueError("wavelength_weights must have shape (nwavelength,).")
+            self.register_buffer("wavelength_weights",wavelength_weights)
 
-            self.register_buffer(
-                "wavelength_weights",
-                wavelength_weights,
-            )
+    # =================================================================
+    # Basic scaling inversion
+    # =================================================================
 
-        requires_pca = self.coef_loss_name not in {
-            "mse",
-            "mae",
-            "l1",
-        }
-
-        if requires_pca:
-            if self.pca_modes is None:
-                raise ValueError(
-                    "pca_modes is required for flux-space or log-flux-space losses.")
-
-            if self.pca_mean is None:
-                raise ValueError(
-                    "pca_mean is required for flux-space or log-flux-space losses.")
-
-            if self.pca_modes.ndim != 2:
-                raise ValueError(
-                    "pca_modes must have shape (ncoefs, nwavelength).")
-
-            if self.pca_mean.ndim != 1:
-                raise ValueError(
-                    "pca_mean must have shape (nwavelength,).")
-
-            if (self.pca_modes.shape[1] != self.pca_mean.shape[0]):
-                raise ValueError(
-                    "The wavelength dimensions of pca_modes and pca_mean do not match.")
-
-            if self.wavelength_weights is not None:
-                if (self.wavelength_weights.shape[0] != self.pca_mean.shape[0]):
-                    raise ValueError(
-                        "wavelength_weights and pca_mean have different lengths.")
-
-    def inverse_scale_coef(self, coef_scaled):
+    def inverse_scale_flux(self, flux_scaled):
         """
-        Convert network-space coefficients back into the
-        original PCA coefficient units.
+        Undo mean/std scaling.
+
+        This does NOT change linear flux into log10 flux or vice versa.
+
+        Returns
+        -------
+        torch.Tensor
+
+        Interpretation depends on flux_scaling:
+
+        none
+            -> linear flux
+
+        standard
+            -> linear flux
+
+        global_standard
+            -> linear flux
+
+        log10_none
+            -> log10 flux
+
+        log10_standard
+            -> log10 flux
+
+        log10_global_standard
+            -> log10 flux
         """
-        return (coef_scaled * self.coef_scale_std + self.coef_scale_mean)
 
-    def reconstruct_log10_flux(self, coef_scaled):
+        if self.flux_scaling in {
+            "none",
+            "log10_none",
+        }:
+            return flux_scaled
+
+        return (flux_scaled * self.flux_scale_std + self.flux_scale_mean)
+
+    # =================================================================
+    # Convert to log10 flux
+    # =================================================================
+
+    def to_log10_flux(self, flux_scaled):
         """
-        Reconstruct base-10 log flux from scaled coefficients.
+        Convert scaled model representation into unscaled log10 flux.
         """
-        coef_physical = self.inverse_scale_coef(coef_scaled)
 
-        return (coef_physical @ self.pca_modes + self.pca_mean)
+        flux_unscaled = self.inverse_scale_flux(flux_scaled)
 
-    def log10_to_linear_flux(self, log10_flux):
+        # -------------------------------------------------------------
+        # Already log10 flux
+        # -------------------------------------------------------------
+
+        if self.flux_scaling in {
+            "log10_none",
+            "log10_standard",
+            "log10_global_standard",
+        }:
+            return flux_unscaled
+
+        # -------------------------------------------------------------
+        # Currently linear flux
+        # -------------------------------------------------------------
+
+        if self.flux_scaling in {
+            "none",
+            "standard",
+            "global_standard",
+        }:
+            if torch.any(flux_unscaled <= 0.0):
+                raise ValueError("Cannot calculate log10-space loss because the reconstructed linear flux contains non-positive values.")
+            return torch.log10(flux_unscaled)
+
+        raise RuntimeError("Unreachable flux-scaling branch.")
+
+    # =================================================================
+    # Convert to physical linear flux
+    # =================================================================
+
+    def to_linear_flux(self, flux_scaled):
         """
-        Convert base-10 log flux to linear flux.
-
-        max_log10_flux can optionally prevent numerical overflow,
-        but clipping also causes zero gradient beyond the chosen
-        clipping threshold.
+        Convert scaled model representation into physical linear flux.
         """
-        if self.max_log10_flux is not None:
-            log10_flux = torch.clamp(log10_flux, max=float(self.max_log10_flux))
 
-        return torch.pow(10.0, log10_flux)
+        flux_unscaled = self.inverse_scale_flux(flux_scaled)
 
-    def reduce_residual(self, residual, kind):
+        # -------------------------------------------------------------
+        # Already linear flux
+        # -------------------------------------------------------------
+
+        if self.flux_scaling in {
+            "none",
+            "standard",
+            "global_standard",
+        }:
+            return flux_unscaled
+
+        # -------------------------------------------------------------
+        # Currently log10 flux
+        # -------------------------------------------------------------
+
+        if self.flux_scaling in {
+            "log10_none",
+            "log10_standard",
+            "log10_global_standard",
+        }:
+            log10_flux = flux_unscaled
+
+            if self.max_log10_flux is not None:
+                log10_flux = torch.clamp(log10_flux,max=float(self.max_log10_flux))
+            return torch.pow(10.0,log10_flux,)
+
+        raise RuntimeError("Unreachable flux-scaling branch.")
+
+    # =================================================================
+    # Convert representation according to requested loss space
+    # =================================================================
+
+    def convert_flux_for_loss(
+        self,
+        flux_scaled,
+    ):
         """
-        Apply MAE or MSE, with optional wavelength weighting.
-
-        For unweighted losses this returns the mean over the
-        batch and wavelength dimensions.
-
-        For weighted losses, weights are normalized so their
-        mean is approximately one.
+        Convert flux into the representation requested by
+        flux_loss_space.
         """
-        if kind in {"mae", "l1"}:
-            element_loss = torch.abs(residual)
 
-        elif kind == "mse":
+        if self.flux_loss_space == "scaled":
+            return flux_scaled
+
+        elif self.flux_loss_space == "log10":
+            return self.to_log10_flux(flux_scaled)
+
+        elif self.flux_loss_space == "linear":
+            return self.to_linear_flux(flux_scaled)
+
+        raise RuntimeError("Unreachable flux-loss-space branch.")
+
+    # =================================================================
+    # Flux residual reduction
+    # =================================================================
+
+    def reduce_flux_residual(
+        self,
+        residual,
+    ):
+        """
+        Apply MSE or MAE, optionally with wavelength weights.
+        """
+
+        if self.flux_loss_name == "mse":
             element_loss = residual.square()
 
+        elif self.flux_loss_name == "mae":
+            element_loss = torch.abs(residual)
+
         else:
-            raise ValueError("Reduction kind must be 'mae' or 'mse'.")
+            raise RuntimeError("Unreachable flux-loss branch.")
+
+        # -------------------------------------------------------------
+        # No wavelength weighting
+        # -------------------------------------------------------------
 
         if self.wavelength_weights is None:
             return torch.mean(element_loss)
 
-        weights = self.wavelength_weights
-        weights = weights / torch.mean(weights)
+        # -------------------------------------------------------------
+        # Wavelength weighting
+        # -------------------------------------------------------------
 
+        weights = self.wavelength_weights
+
+        # Normalize so mean weight = 1.
+        weights = (weights / torch.mean(weights))
         return torch.mean(element_loss * weights.unsqueeze(0))
 
-    def coefficient_loss(
+    # =================================================================
+    # Flux loss
+    # =================================================================
+
+    def calculate_flux_loss(
         self,
-        coef_pred_scaled,
-        coef_true_scaled,
+        flux_pred_scaled,
+        flux_true_scaled,
     ):
-        loss_name = self.coef_loss_name
+        """
+        Calculate flux loss.
 
-        # ----------------------------------------------
-        # Direct scaled-coefficient losses
-        # ----------------------------------------------
+        Both prediction and target are assumed to have already
+        passed through FluxEmulatorScaler.
+        """
 
-        if loss_name == "mse":
-            residual = coef_pred_scaled - coef_true_scaled
-            return torch.mean(residual.square())
+        flux_pred_for_loss = self.convert_flux_for_loss(flux_pred_scaled)
+        flux_true_for_loss = self.convert_flux_for_loss(flux_true_scaled)
+        residual = (flux_pred_for_loss - flux_true_for_loss)
+        return self.reduce_flux_residual(residual)
 
-        if loss_name == "rmse":
-            residual = coef_pred_scaled - coef_true_scaled
-            return torch.sqrt(torch.mean(residual.square())) + self.rmse_eps
-
-        if loss_name in {"mae", "l1"}:
-            residual = coef_pred_scaled - coef_true_scaled
-            return torch.mean(torch.abs(residual))
-
-        # ----------------------------------------------
-        # Reconstruct log10 flux
-        # ----------------------------------------------
-
-        log10_flux_pred = self.reconstruct_log10_flux(coef_pred_scaled)
-        log10_flux_true = self.reconstruct_log10_flux(coef_true_scaled)
-        log10_flux_residual = log10_flux_pred - log10_flux_true
-
-        # ----------------------------------------------
-        # Log-flux losses
-        # ----------------------------------------------
-
-        if loss_name == "logflux_mse":
-            return self.reduce_residual(log10_flux_residual, kind="mse")
-
-        if loss_name == "logflux_mae":
-            return self.reduce_residual(log10_flux_residual, kind="mae")
-
-        # ----------------------------------------------
-        # Convert reconstructed spectra to linear flux
-        # ----------------------------------------------
-
-        flux_pred = self.log10_to_linear_flux(log10_flux_pred)
-        flux_true = self.log10_to_linear_flux(log10_flux_true)
-        flux_residual = flux_pred - flux_true
-
-        # ----------------------------------------------
-        # Absolute linear-flux losses
-        # ----------------------------------------------
-
-        if loss_name == "flux_mse":
-            return self.reduce_residual(flux_residual, kind="mse")
-
-        if loss_name == "flux_mae":
-            return self.reduce_residual(flux_residual, kind="mae")
-
-        # ----------------------------------------------
-        # Relative linear-flux losses
-        # ----------------------------------------------
-
-        relative_residual = (flux_residual / (torch.abs(flux_true) + self.relative_flux_eps))
-
-        if loss_name == "relative_flux_mse":
-            return self.reduce_residual(relative_residual, kind="mse")
-
-        if loss_name == "relative_flux_mae":
-            return self.reduce_residual(relative_residual, kind="mae")
-
-        raise RuntimeError("Unreachable coefficient-loss branch.")
+    # =================================================================
+    # mfrac loss
+    # =================================================================
 
     def calculate_mfrac_loss(
         self,
         mfrac_pred_scaled,
         mfrac_true_scaled,
     ):
-        residual = mfrac_pred_scaled - mfrac_true_scaled
+        residual = (mfrac_pred_scaled - mfrac_true_scaled)
 
         if self.mfrac_loss_name == "mse":
             return torch.mean(residual.square())
 
-        if self.mfrac_loss_name == "rmse":
-            return torch.sqrt(torch.mean(residual.square())) + self.rmse_eps
-
-        if self.mfrac_loss_name in {"mae", "l1"}:
+        elif self.mfrac_loss_name == "mae":
             return torch.mean(torch.abs(residual))
 
         raise RuntimeError("Unreachable mfrac-loss branch.")
 
+    # =================================================================
+    # Full loss
+    # =================================================================
+
     def forward(
         self,
         prediction,
-        coef_true_scaled,
+        flux_true_scaled,
         mfrac_true_scaled=None,
     ):
-        loss_coef = self.coefficient_loss(prediction["coef"], coef_true_scaled)
+        """
+        Parameters
+        ----------
+        prediction : dict
+            Model output. Must contain:
+                prediction["flux"]
 
-        if 'mfrac' not in prediction:
-            loss_mfrac = loss_coef.new_zeros(())
+            and optionally:
+                prediction["mfrac"]
+
+        flux_true_scaled : torch.Tensor
+            True flux after passing through FluxEmulatorScaler.
+
+        mfrac_true_scaled : torch.Tensor or None
+            True mfrac after passing through FluxEmulatorScaler.
+        """
+
+        loss_flux = self.calculate_flux_loss(prediction["flux"], flux_true_scaled)
+
+        # -------------------------------------------------------------
+        # No mfrac prediction
+        # -------------------------------------------------------------
+
+        if "mfrac" not in prediction:
+            loss_mfrac = (loss_flux.new_zeros(()))
+
             return {
-                "total": loss_coef,
-                "coef": loss_coef,
+                "total": loss_flux,
+                "flux": loss_flux,
                 "mfrac": loss_mfrac,
             }
 
+        # -------------------------------------------------------------
+        # mfrac prediction
+        # -------------------------------------------------------------
+
         if mfrac_true_scaled is None:
-            raise ValueError('mfrac_true_scaled is required when the model predicts mfrac')
-        
+            raise ValueError("mfrac_true_scaled is required when the model predicts mfrac.")
+
         loss_mfrac = self.calculate_mfrac_loss(prediction["mfrac"], mfrac_true_scaled)
-        loss_total = (loss_coef + self.mfrac_lambda * loss_mfrac)
+        loss_total = loss_flux + self.mfrac_lambda * loss_mfrac
 
         return {
             "total": loss_total,
-            "coef": loss_coef,
+            "flux": loss_flux,
             "mfrac": loss_mfrac,
         }
+
+
 
 class EarlyStopping:
     def __init__(
@@ -773,7 +979,7 @@ class EarlyStopping:
 
 
 # class to load pre-trained emulator from .pt file and can be used for prediction
-class LoadedSPSEmulator:
+class LoadedFluxSPSEmulator:
     def __init__(
         self,
         checkpoint_path,
@@ -790,18 +996,13 @@ class LoadedSPSEmulator:
         )
 
         # Reconstruct model
-        self.model = SPSEmulator(**self.checkpoint["model_config"])
+        self.model = FluxSPSEmulator(**self.checkpoint["model_config"])
         self.model.load_state_dict(self.checkpoint["model_state_dict"])
         self.model.to(self.device)
         self.model.eval()
 
         # Reconstruct fitted scaler
-        self.scaler = EmulatorScaler.from_state_dict(self.checkpoint["scaler_state"])
-
-        # PCA reconstruction arrays
-        self.pca_lbs = np.asarray(self.checkpoint["pca_lbs"])
-        self.pca_modes = np.asarray(self.checkpoint["pca_modes"])
-        self.pca_mean = np.asarray(self.checkpoint["pca_mean"])
+        self.scaler = FluxEmulatorScaler.from_state_dict(self.checkpoint["scaler_state"])
 
         self.train_param_keys = self.checkpoint["train_param_keys"]
         self.default_params = self.checkpoint["default_params"]
@@ -809,12 +1010,7 @@ class LoadedSPSEmulator:
 
     # single object inference method
     @torch.inference_mode()
-    def predict_one(
-        self,
-        x,
-        return_spectrum=True,
-        return_linear_flux=True,
-    ):
+    def predict_one(self, x):
         x_scaled = self.scaler.transform_x(x)
         model_dtype = next(self.model.parameters()).dtype
 
@@ -825,12 +1021,12 @@ class LoadedSPSEmulator:
         ).reshape(1, -1)
 
         prediction = self.model(x_tensor)
-        coef_scaled = (prediction["coef"][0].cpu().numpy())
-        coef = self.scaler.inverse_transform_coef(coef_scaled)
+        flux_scaled = (prediction["flux"][0].cpu().numpy())
+        flux = self.scaler.inverse_transform_flux(flux_scaled)
 
         result = {
-            "coef_scaled": coef_scaled,
-            "coef": coef,
+            "flux_scaled": flux_scaled,
+            "flux": flux,
         }
 
         if "mfrac" in prediction:
@@ -838,76 +1034,47 @@ class LoadedSPSEmulator:
             result["mfrac_scaled"] = mfrac_scaled
             result["mfrac"] = (self.scaler.inverse_transform_mfrac(mfrac_scaled))
 
-        if return_spectrum:
-            log10_flux = (coef @ self.pca_modes + self.pca_mean)
-            result["log10_flux"] = log10_flux
-            result["lbs"] = self.pca_lbs
-
-            if return_linear_flux:
-                result["flux"] = (10.0 ** log10_flux)
-
         return result
 
     # multiple object inference method
     @torch.inference_mode()
-    def predict(
-        self,
-        x,
-        batch_size=2000,
-        return_spectrum=True,
-        return_linear_flux=True,
-    ):
+    def predict(self, x, batch_size=2000):
         x = np.asarray(x)
 
         # Redirect one-dimensional input to predict_one().
         if x.ndim == 1:
-            return self.predict_one(
-                x=x,
-                return_spectrum=return_spectrum,
-                return_linear_flux=return_linear_flux,
-            )
+            return self.predict_one(x=x)
 
         if x.ndim != 2:
-            raise ValueError(
-                "x must have shape (n_features,) or "
-                "(n_objects, n_features)."
-            )
+            raise ValueError("x must have shape (n_features,) or (n_objects, n_features).")
 
         x_scaled = self.scaler.transform_x(x)
         model_dtype = next(self.model.parameters()).dtype
 
         x_tensor = torch.as_tensor(x_scaled, dtype=model_dtype)
-        coef_batches = []
+        flux_batches = []
         mfrac_batches = []
 
         for start in range(0, x_tensor.shape[0], batch_size):
             x_batch = x_tensor[start:start + batch_size].to(self.device)
             prediction = self.model(x_batch)
-            coef_batches.append(prediction["coef"].cpu())
+            flux_batches.append(prediction["flux"].cpu())
 
             if "mfrac" in prediction:
                 mfrac_batches.append(prediction["mfrac"].cpu())
 
-        coef_scaled = torch.cat(coef_batches, dim=0,).numpy()
-        coef = self.scaler.inverse_transform_coef(coef_scaled)
+        flux_scaled = torch.cat(flux_batches, dim=0,).numpy()
+        flux = self.scaler.inverse_transform_flux(flux_scaled)
 
         result = {
-            "coef_scaled": coef_scaled,
-            "coef": coef,
+            "flux_scaled": flux_scaled,
+            "flux": flux,
         }
 
         if mfrac_batches:
             mfrac_scaled = torch.cat(mfrac_batches, dim=0).numpy()
             result["mfrac_scaled"] = mfrac_scaled
             result["mfrac"] = (self.scaler.inverse_transform_mfrac(mfrac_scaled))
-
-        if return_spectrum:
-            log10_flux = (coef @ self.pca_modes + self.pca_mean)
-            result["log10_flux"] = log10_flux
-            result["lbs"] = self.pca_lbs
-
-            if return_linear_flux:
-                result["flux"] = (10.0 ** log10_flux)
 
         return result
 
@@ -919,9 +1086,8 @@ class LoadedSPSEmulator:
 
 
 
-# =============================================================================
-# Functions
-# =============================================================================
+
+# ===================================
 
 def get_device(requested="auto"):
     requested = requested.lower()
@@ -939,6 +1105,7 @@ def load_data(filename):
     if filename.split('.')[-1] == "npz":
         dat = np.load(filename)
         x = dat["x"]
+        lbs = dat["lbs"]
         coef = dat["coef"]
         mfrac = dat["mfrac"]
         train_param_keys = dat['train_param_keys'].tolist()
@@ -951,6 +1118,7 @@ def load_data(filename):
 
         out_dict = {
             "x": x,
+            "lbs": lbs,
             "coef": coef,
             "mfrac": mfrac,
             "flux": flux,
@@ -964,6 +1132,7 @@ def load_data(filename):
         with h5py.File(filename, "r") as dat:
             lamb_obs = dat["lamb_obs"][()]
             x = dat["x"][()]
+            lbs = dat["lbs"][()]
             coef = dat["coef"][()]
             flux_fiducial = dat["flux_fiducial"][()]
             mfrac = dat["mfrac"][()]
@@ -977,6 +1146,7 @@ def load_data(filename):
                 flux = None
         out_dict = {
             "x": x,
+            "lbs": lbs,
             "lamb_obs": lamb_obs,
             "coef": coef,
             "mfrac": mfrac,
@@ -1104,8 +1274,9 @@ def make_optimizer(
 
     raise ValueError("Optimizer must be 'adam', 'adamw', 'sgd', or 'rmsprop'.")
 
+
 # one full epoch run function that makes data go through MLP and returns loss and gradient if training
-def run_epoch(
+def run_flux_epoch(
     model,
     data_loader,
     criterion,
@@ -1129,7 +1300,7 @@ def run_epoch(
 
     accumulated = {
         "total": 0.0,
-        "coef": 0.0,
+        "flux": 0.0,
         "mfrac": 0.0,
     }
 
@@ -1149,7 +1320,7 @@ def run_epoch(
                 non_blocking=True,
             )
 
-            coef_true = batch["coef"].to(
+            flux_true = batch["flux"].to(
                 device=device,
                 dtype=torch.float32,
                 non_blocking=True,
@@ -1168,7 +1339,7 @@ def run_epoch(
 
             losses = criterion(
                 prediction,
-                coef_true,
+                flux_true,
                 mfrac_true,
             )
 
@@ -1200,9 +1371,10 @@ def run_epoch(
         for name, value in accumulated.items()
     }
 
+
 # this function takes train & valid data, model, optimizer, loss class and use run_one_epoch to actually fit the emulator
 # returns training history
-def fit_emulator(
+def fit_flux_emulator(
     model,
     train_loader,
     valid_loader,
@@ -1218,10 +1390,10 @@ def fit_emulator(
 ):
     if monitor not in {
         "total",
-        "coef",
+        "flux",
         "mfrac",
     }:
-        raise ValueError("monitor must be 'total', 'coef', or 'mfrac'.")
+        raise ValueError("monitor must be 'total', 'flux', or 'mfrac'.")
 
     # Ensure both model and criterion are on the right device.
     model.to(device)
@@ -1235,10 +1407,10 @@ def fit_emulator(
 
     history = {
         "train_total": [],
-        "train_coef": [],
+        "train_flux": [],
         "train_mfrac": [],
         "valid_total": [],
-        "valid_coef": [],
+        "valid_flux": [],
         "valid_mfrac": [],
     }
 
@@ -1247,7 +1419,7 @@ def fit_emulator(
         print("Latest epoch: not started")
 
     for epoch in range(1, max_epochs + 1):
-        train_metrics = run_epoch(
+        train_metrics = run_flux_epoch(
             model=model,
             data_loader=train_loader,
             criterion=criterion,
@@ -1255,7 +1427,7 @@ def fit_emulator(
             optimizer=optimizer,
         )
 
-        valid_metrics = run_epoch(
+        valid_metrics = run_flux_epoch(
             model=model,
             data_loader=valid_loader,
             criterion=criterion,
@@ -1265,7 +1437,7 @@ def fit_emulator(
 
         for name in {
             "total",
-            "coef",
+            "flux",
             "mfrac",
         }:
             history[f"train_{name}"].append(train_metrics[name])
@@ -1287,7 +1459,7 @@ def fit_emulator(
             print(
                 f"Latest epoch:\t{epoch} | "
                 f"valid={valid_metrics[monitor]:.5e} | "
-                f"coef={valid_metrics['coef']:.5e} | "
+                f"flux={valid_metrics['flux']:.5e} | "
                 f"mfrac={valid_metrics['mfrac']:.5e} | "
                 f"train={train_metrics[monitor]:.5e}"
             )
@@ -1297,7 +1469,7 @@ def fit_emulator(
         #         f"Epoch {epoch:4d} | "
         #         f"train loss={train_metrics[monitor]:.6e} | "
         #         f"valid loss={valid_metrics[monitor]:.6e} | "
-        #         # f"valid coef={valid_metrics['coef']:.6e} | "
+        #         # f"valid flux={valid_metrics['flux']:.6e} | "
         #         # f"valid mfrac={valid_metrics['mfrac']:.6e}"
         #     )
 
@@ -1324,9 +1496,10 @@ def fit_emulator(
     print("\033[?7h\033[0m")
     return history
 
+
 # prediction function for full set of test data that has gradient tracking turned off
 @torch.inference_mode()
-def predict_emulator(
+def predict_flux_emulator(
     model,
     x_unscaled,
     scaler,
@@ -1340,24 +1513,24 @@ def predict_emulator(
     x_scaled = scaler.transform_x(x_unscaled)
     x_tensor = torch.as_tensor(x_scaled, dtype=torch.float32)
 
-    coef_predictions = []
+    flux_predictions = []
     mfrac_predictions = []
 
     for start in range(0, x_tensor.shape[0], batch_size):
 
         x_batch = x_tensor[start:start + batch_size].to(device=device, dtype=torch.float32)
         prediction = model(x_batch)
-        coef_predictions.append(prediction["coef"].cpu())
+        flux_predictions.append(prediction["flux"].cpu())
 
         if 'mfrac' in prediction:
             mfrac_predictions.append(prediction["mfrac"].cpu())
 
-    coef_scaled = torch.cat(coef_predictions, dim=0).numpy()
-    coef_physical = scaler.inverse_transform_coef(coef_scaled)
+    flux_scaled = torch.cat(flux_predictions, dim=0).numpy()
+    flux_physical = scaler.inverse_transform_flux(flux_scaled)
 
     result = {
-        'coef_scaled': coef_scaled,
-        'coef': coef_physical
+        'flux_scaled': flux_scaled,
+        'flux': flux_physical
     }
 
     if len(mfrac_predictions) > 0:
@@ -1368,9 +1541,10 @@ def predict_emulator(
 
     return result
 
+
 # prediction function for single data entry
 @torch.inference_mode()
-def predict_one(
+def predict_flux_one(
     model,
     x,
     device,
@@ -1389,13 +1563,15 @@ def predict_one(
     x_scaled = (np.asarray(x, dtype=np.float32) - x_mean) / x_std
     x_tensor = torch.as_tensor(x_scaled, dtype=torch.float32, device=device).reshape(1, -1)
     prediction = model(x_tensor)
-    coef_scaled = prediction["coef"][0].cpu().numpy()
-    coef = scaler.inverse_transform_coef(coef_scaled)
-    result = {"coef": coef}
+    flux_scaled = prediction["flux"][0].cpu().numpy()
+    flux = scaler.inverse_transform_flux(flux_scaled)
+    result = {"flux": flux}
 
     if "mfrac" in prediction:
         mfrac_scaled = (prediction["mfrac"][0].cpu().item())
         result["mfrac"] = (scaler.inverse_transform_mfrac(mfrac_scaled))
 
     return result
+
+
 

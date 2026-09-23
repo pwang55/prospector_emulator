@@ -1,7 +1,7 @@
 """
 
 Usage:
-    $ python train_emulator.py --config train_config.yaml
+    $ python train_flux_emulator.py --config configs/train_flux_emulator.yaml
 
 """
 import numpy as np
@@ -15,9 +15,10 @@ import yaml
 from pathlib import Path
 import argparse
 import json
-import libs.emulator_libs as elibs
+import libs.flux_emulator_libs as felibs
 import time
 from datetime import timedelta
+
 
 # =============================================================================
 # Configuration and command-line handling
@@ -43,7 +44,7 @@ def parse_args():
         type=str,
         default=None,
         metavar='<str>',
-        help='train data containing input x, coef and mfrac'
+        help='train data containing input x, flux and mfrac'
     )
     parser.add_argument(
         # '-v',
@@ -51,7 +52,7 @@ def parse_args():
         type=str,
         default=None,
         metavar='<str>',
-        help='valid data containing input x, coef and mfrac'
+        help='valid data containing input x, flux and mfrac'
     )
     parser.add_argument(
         # '-vs',
@@ -67,15 +68,7 @@ def parse_args():
         type=str,
         default=None,
         metavar='<str>',
-        help='test data containing input x, coef, mfrac and actual spectra'
-    )
-    parser.add_argument(
-        # '-td',
-        '--pca-file',
-        type=str,
-        default=None,
-        metavar='<str>',
-        help='file containing PCA wavelength grid lbs, modes and mean'
+        help='test data containing input x, flux, mfrac and actual spectra'
     )
     parser.add_argument(
         # '-td',
@@ -87,11 +80,11 @@ def parse_args():
     )
     parser.add_argument(
         # '-td',
-        '--coef-scaling',
+        '--flux-scaling',
         type=str,
         default=None,
         metavar='<str>',
-        help="How to scale coefs in training, can be 'none', 'standard', 'coef0'"
+        help="How to scale fluxes in training, can be 'none', 'standard', 'global_standard', 'log10_none', 'log10_standard', 'log10_global_standard'"
     )
     parser.add_argument(
         # '-td',
@@ -99,7 +92,7 @@ def parse_args():
         type=str,
         default=None,
         metavar='<str>',
-        help="How to scale mfracs in training, can be 'none', 'standard', 'match_coef0'"
+        help="How to scale mfracs in training, can be 'none', 'standard'"
     )
     parser.add_argument(
         # '-td',
@@ -164,18 +157,18 @@ def parse_args():
         default=None,
         nargs="+",
         metavar="N",
-        help='coef and mfrac shared hidden layer dimensions; \
+        help='flux and mfrac shared hidden layer dimensions; \
               use consecutive integer with space in betweeh \
               to indicate neurons in each layer, ex: --shared_dims 256 256 256'
     )
     parser.add_argument(
         # '-td',
-        '--coef-head-dims',
+        '--flux-head-dims',
         type=int,
         default=None,
         nargs="+",
         metavar="N",
-        help='coef shared hidden layer dimensions after shared_dim'
+        help='flux shared hidden layer dimensions after shared_dim'
     )
     parser.add_argument(
         # '-td',
@@ -215,11 +208,19 @@ def parse_args():
     )
     parser.add_argument(
         # '-td',
-        '--coef-loss',
+        '--flux-loss',
         type=str,
         default=None,
         metavar="<str>",
-        help="mse, rmse, mae, logflux_mse, logflux_mae, flux_mse, flux_mae, relative_flux_mse, relative_flux_mae"
+        help="mse, mae"
+    )
+    parser.add_argument(
+        # '-td',
+        '--flux-loss-space',
+        type=str,
+        default=None,
+        metavar="<str>",
+        help="scaled, log10, linear"
     )
     parser.add_argument(
         # '-td',
@@ -235,7 +236,7 @@ def parse_args():
         type=float,
         default=None,
         metavar="<float>",
-        help="weight of mfrac_loss compared to coef_loss"
+        help="weight of mfrac_loss compared to flux_loss"
     )
     parser.add_argument(
         # '-td',
@@ -299,7 +300,7 @@ def parse_args():
         type=str,
         default=None,
         metavar="<str>",
-        help="which loss to monitor, can be 'total', 'coef', 'mfrac'"
+        help="which loss to monitor, can be 'total', 'flux', 'mfrac'"
     )
     parser.add_argument(
         "-v",
@@ -352,6 +353,7 @@ def parse_args():
     return parser.parse_args()
 
 
+
 def load_config(path, args):
     with open(path, "r") as file:
         config = yaml.safe_load(file)
@@ -364,11 +366,10 @@ def load_config(path, args):
         "valid_data": ("Data", "valid_data"),
         "valid_split": ("Data", "valid_split"),
         "test_data": ("Data", "test_data"),
-        "pca_file": ("Data", "pca_file"),
         # config Device
         "device": "Device",
         # config Scaler
-        "coef_scaling": ("Scaler", "coef_scaling"),
+        "flux_scaling": ("Scaler", "flux_scaling"),
         "mfrac_scaling": ("Scaler", "mfrac_scaling"),
         "train_batch_size": ("Scaler", "train_batch_size"),
         "valid_batch_size": ("Scaler", "valid_batch_size"),
@@ -379,13 +380,14 @@ def load_config(path, args):
         # "test_persistent_workers": ("Scaler", "test_persistent_workers"),
         # config Emulator
         "shared_dims": ("Emulator", "shared_dims"),
-        "coef_head_dims": ("Emulator", "coef_head_dims"),
+        "flux_head_dims": ("Emulator", "flux_head_dims"),
         "mfrac_head_dims": ("Emulator", "mfrac_head_dims"),
         "activation": ("Emulator", "activation"),
         "dropout": ("Emulator", "dropout"),
         "predict_mfrac": ("Emulator", "predict_mfrac"),
         # config Loss
-        "coef_loss": ("Loss", "coef_loss"),
+        "flux_loss": ("Loss", "flux_loss"),
+        "flux_loss_space": ("Loss", "flux_loss_space"),
         "mfrac_loss": ("Loss", "mfrac_loss"),
         "mfrac_lambda": ("Loss", "mfrac_lambda"),
         # config Optimizer
@@ -436,113 +438,79 @@ def format_runtime(seconds):
         f"{seconds:.1f}s"
     )
 
-# def parse_value(text):
-#     """Parse CLI values using YAML syntax: true, 3, 1e-3, [512, 256], etc."""
-#     return yaml.safe_load(text)
-
-# def set_nested(config, dotted_key, value):
-#     """Set a nested YAML entry such as model.activation=relu."""
-#     keys = dotted_key.split(".")
-#     current = config
-
-#     for key in keys[:-1]:
-#         if key not in current or not isinstance(current[key], dict):
-#             current[key] = {}
-#         current = current[key]
-
-#     current[keys[-1]] = value
-
-# def load_config(path, overrides):
-#     with open(path, "r", encoding="utf-8") as file:
-#         config = yaml.safe_load(file) or {}
-
-#     for override in overrides:
-#         if "=" not in override:
-#             raise ValueError(f"Override must be KEY=VALUE, received: {override!r}")
-#         key, value = override.split("=", 1)
-#         set_nested(config, key, parse_value(value))
-
-#     return config
-
-
 
 # =============================================================================
 # plotting functions
 # =============================================================================
 
-def rel_err_ratio_plots(
-        x, 
-        flux_rel_l2_err, 
-        coef_rel_l2_err, 
-        flux_median_ratio, 
-        coef0_ratio, 
-        save=False,
-        filename="rel_err_ratio.png",
-        output_dirname="",
-        dpi=300,
-        x_min=-0.02,
-        x_max=3.02,
-        x_label="z",
-        l2_err_min=-0.05,
-        l2_err_max=0.6,
-        ratio_min=0.5,
-        ratio_max=1.5,
-        bins='log',
-        gridsize=100,
-        markersize=3,
-        markeralpha=0.3,
-        figsize=(8, 6),
-        style='hexbin',
-        **kwargs):
+def rel_flux_err_plot(
+    flux_pred,
+    flux_true,
+    lamb_obs=None,
+    flux_scale='linear',
+    yscale='linear',
+    save=False,
+    filename="rel_flux_err_plot.png",
+    figsize=(10, 5),
+    output_dirname="",
+    dpi=300,
+    fill_between_95_kwargs=None,
+    fill_between_68_kwargs=None,
+    plot_kwargs=None,
+    # **kwargs,
+    ):
+    percentiles = [2.5, 16, 50, 84, 97.5]
+    fill_between_95_kwargs = fill_between_95_kwargs or {}
+    fill_between_68_kwargs = fill_between_68_kwargs or {}
+    plot_kwargs = plot_kwargs or {}
+
+    fill_between_95_kwargs.setdefault("alpha", 0.2)
+    fill_between_95_kwargs.setdefault("color", "tab:blue")
+    fill_between_68_kwargs.setdefault("alpha", 0.3)
+    fill_between_68_kwargs.setdefault("color", "tab:orange")
+
+    plot_kwargs.setdefault("linestyle", "-")
+    plot_kwargs.setdefault("marker", ".")
+    plot_kwargs.setdefault("color", "tab:green")
+    plot_kwargs.setdefault("linewidth", 0.5)
+    plot_kwargs.setdefault("markersize", 3)
+    plot_kwargs.setdefault("alpha", 0.8)
+
     output_dir = Path(output_dirname)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(2, 2, figsize=figsize)
-    if style == "hexbin":
-        hb00 = ax[0,0].hexbin(x, flux_rel_l2_err, gridsize=gridsize, extent=[x_min, x_max, l2_err_min, l2_err_max], bins=bins, **kwargs)
-        fig.colorbar(hb00, ax=ax[0,0])
-    elif style == "scatter":
-        ax[0,0].scatter(x, flux_rel_l2_err, s=markersize, alpha=markeralpha, **kwargs)
-    ax[0,0].set_xlabel(x_label)
-    ax[0,0].set_ylim(l2_err_min, l2_err_max)
-    ax[0,0].grid(alpha=0.3)
-    ax[0,0].set_title('flux relative L2 error')
+    n_lamb_obs = flux_pred.shape[1]
+    if flux_scale == 'log10':
+        flux_pred = np.log10(flux_pred)
+        flux_true = np.log10(flux_true)
+        y_label = r'$(log_{10}(f_{pred})-log_{10}(f_{true}))/log_{10}(f_{true})$'
+    elif flux_scale == 'linear':
+        y_label = r'$(f_{pred}-f_{true})/f_{true}$'
+    rel_errs = (flux_pred - flux_true) / flux_true
 
-    if style == "hexbin":
-        hb01 = ax[0,1].hexbin(x, coef_rel_l2_err, gridsize=gridsize, extent=[x_min, x_max, l2_err_min, l2_err_max], bins=bins, **kwargs)
-        fig.colorbar(hb01, ax=ax[0,1])
-    elif style == "scatter":
-        ax[0,1].scatter(x, coef_rel_l2_err, s=markersize, alpha=markeralpha, **kwargs)
-    ax[0,1].set_xlabel(x_label)
-    ax[0,1].set_ylim(l2_err_min, l2_err_max)
-    ax[0,1].grid(alpha=0.3)
-    ax[0,1].set_title('coefs relative L2 error')
+    x_label = r"wavelength [$\mu m$]"
+    if lamb_obs is None:
+        lamb_obs = np.arange(n_lamb_obs)
+        x_label = "datapoints"
 
-    if style == "hexbin":
-        hb10 = ax[1,0].hexbin(x, flux_median_ratio, gridsize=gridsize, extent=[x_min, x_max, ratio_min, ratio_max], bins=bins, **kwargs)
-        fig.colorbar(hb10, ax=ax[1,0])
-    elif style == "scatter":
-        ax[1,0].scatter(x, flux_median_ratio, s=markersize, alpha=markeralpha, **kwargs)
-    ax[1,0].grid(alpha=0.6)
-    ax[1,0].set_ylim(ratio_min, ratio_max)
-    ax[1,0].set_xlabel(x_label)
-    ax[1,0].set_title('flux median ratio')
-
-    if style == "hexbin":
-        hb10 = ax[1,1].hexbin(x, coef0_ratio, gridsize=gridsize, extent=[x_min, x_max, ratio_min, ratio_max], bins=bins, **kwargs)
-        fig.colorbar(hb10, ax=ax[1,1])
-    elif style == "scatter":
-        ax[1,1].scatter(x, coef0_ratio, s=markersize, alpha=markeralpha, **kwargs)
-    ax[1,1].grid(alpha=0.6)
-    ax[1,1].set_ylim(ratio_min, ratio_max)
-    ax[1,1].set_xlabel(x_label)
-    ax[1,1].set_title('coef0 ratio')
-
-    # fig.suptitle(f'test metric = {test_metrics['total']:.4f}')
+    # errs_mean = np.mean(rel_errs, axis=0)
+    # errs_std = np.std(rel_errs, axis=0)
+    errs_percentiles = np.percentile(rel_errs, percentiles, axis=0)
+    fig, ax = plt.subplots(figsize=figsize)
+    # ax.errorbar(lamb_obs, errs_mean, errs_std, **kwargs)
+    ax.fill_between(lamb_obs, errs_percentiles[0], errs_percentiles[-1], **fill_between_95_kwargs, label="95% percentile")
+    ax.fill_between(lamb_obs, errs_percentiles[1], errs_percentiles[-2], **fill_between_68_kwargs, label="68% percentile")
+    ax.plot(lamb_obs, errs_percentiles[2], **plot_kwargs, label="median")
+    ax.legend()
+    ax.grid(alpha=0.7)
+    ax.set_title("Relative fiducial flux error")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_yscale(yscale)
     fig.tight_layout()
-
     if save:
         plt.savefig(output_dir / filename, dpi=dpi)
+
 
 def mfrac_plots(
         mfrac_true,
@@ -580,73 +548,23 @@ def mfrac_plots(
         plt.savefig(output_dir / filename, dpi=dpi)
 
 
-def coef_plots(
-        coef_true,
-        coef_pred,
-        figsize=(12, 8),
-        style="hexbin",
-        markercolor_data=None,
-        markersize=4,
-        markeralpha=0.2,
-        markercolor_label="",
-        gridsize=100,
-        bins="log",
-        save=False,
-        filename="coef_plots.png",
-        output_dirname="",
-        dpi=300,
-        **kwargs,
-    ):
-    output_dir = Path(output_dirname)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    fig, ax = plt.subplots(4, 5, figsize=figsize)
-    for i in range(coef_true.shape[1]):
-        rowi = i // 5
-        coli = i % 5
-        if style == "scatter":
-            sc = ax[rowi, coli].scatter(coef_true[:,i], coef_pred[:,i], s=markersize, c=markercolor_data[:,0], alpha=markeralpha, **kwargs)
-            xmin, xmax = ax[rowi, coli].get_xlim()
-
-        elif style == "hexbin":
-            ax[rowi, coli].scatter(coef_true[:,i], coef_pred[:,i], s=markersize, alpha=0.0)
-            xmin, xmax = ax[rowi, coli].get_xlim()
-            ax[rowi, coli].clear()
-            hb = ax[rowi, coli].hexbin(coef_true[:,i], coef_pred[:,i], gridsize=gridsize, extent=[xmin, xmax, xmin, xmax], bins=bins, **kwargs)
-            fig.colorbar(hb, ax=ax[rowi, coli])
-
-        ax[rowi, coli].set_xlim(xmin, xmax)
-        ax[rowi, coli].set_ylim(xmin, xmax)
-        ax[rowi, coli].plot([xmin, xmax], [xmin, xmax], linewidth=0.8, alpha=0.6, color='tab:red')
-        ax[rowi, coli].set_title(f'coef {i}')
-        ax[rowi, coli].grid(alpha=0.4)
-
-    if style == "scatter":
-        fig.subplots_adjust(right=0.85, wspace=0.1, hspace=0.25)
-        cbar_ax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
-        sm = ScalarMappable(norm=sc.norm, cmap=sc.cmap)
-        cbar = fig.colorbar(sm, ax=cbar_ax, label=markercolor_label)
-
-    fig.tight_layout()
-    if save:
-        plt.savefig(output_dir / filename, dpi=dpi)
 
 def each_param_plots(
         x_test,
-        rel_l2_err,
-        med_ratio,
+        flux_pred,
+        flux_true,
+        flux_scale='log10',
         feature_names=None,
-        figsize=(14, 12),
+        figsize=(15, 12),
         gridsize=100,
         ymin1=-0.02,
         ymax1=0.5,
-        ymin2 = 0.5,
-        ymax2 = 1.5,
+        ymin2=0.5,
+        ymax2=1.5,
+        yscale='linear',
         bins="log",
         save=False,
         filename="param_plots.png",
-        # filename1="param_plots_rel_l2_err.png",
-        # filename2="param_plots_med_ratio.png",
         output_dirname="",
         dpi=300,
         **kwargs,
@@ -661,36 +579,17 @@ def each_param_plots(
     # TODO automatically decide dimension based on input number of templates
     # fig1, ax1 = plt.subplots(2, 5, figsize=figsize)
 
-    # for i in range(x_test.shape[1]):
-    #     rowi = i // 5
-    #     coli = i % 5
-    #     axi = ax1[rowi, coli]
-    #     xmin = np.min(x_test[:,i])
-    #     xmax = np.max(x_test[:,i])
-    #     hb = axi.hexbin(x_test[:,i], rel_l2_err, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)
-    #     fig1.colorbar(hb, ax=axi)
-    #     axi.set_xlabel(feature_names[i])
-    #     axi.grid()
-    # fig1.tight_layout()
-    # if save:
-    #     plt.savefig(output_dir / filename1, dpi=dpi)
-    #     plt.close()
+    if flux_scale == 'log10':
+        flux_true = np.log10(flux_true)
+        flux_pred = np.log10(flux_pred)
+        y1_label = 'relative log10_flux L2 error'
+        y2_label = 'median log10_flux ratio'
+    elif flux_scale == 'linear':
+        y1_label = 'relative flux L2 error'
+        y2_label = 'median flux ratio'
 
-    # fig2, ax2 = plt.subplots(2, 5, figsize=figsize)
-    # for i in range(x_test.shape[1]):
-    #     rowi = i // 5
-    #     coli = i % 5
-    #     axi = ax2[rowi, coli]
-    #     xmin = np.min(x_test[:,i])
-    #     xmax = np.max(x_test[:,i])
-    #     hb = axi.hexbin(x_test[:,i], med_ratio, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
-    #     fig2.colorbar(hb, ax=axi)
-    #     axi.set_xlabel(feature_names[i])
-    #     axi.grid()
-    # fig2.tight_layout()
-    # if save:
-    #     plt.savefig(output_dir / filename2, dpi=dpi)
-    #     plt.close()
+    rel_l2_errs = np.linalg.norm(flux_pred-flux_true, axis=1)/np.linalg.norm(flux_true, axis=1)
+    median_ratios = np.median(flux_pred/flux_true, axis=1)
 
     fig, ax = plt.subplots(4, 5, figsize=figsize)
     for i in range(x_test.shape[1]):
@@ -699,15 +598,23 @@ def each_param_plots(
         axi1 = ax[rowi, coli]
         xmin = np.min(x_test[:,i])
         xmax = np.max(x_test[:,i])
-        hb1 = axi1.hexbin(x_test[:,i], rel_l2_err, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)        
+        hb1 = axi1.hexbin(x_test[:,i], rel_l2_errs, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)        
         fig.colorbar(hb1, ax=axi1)
         axi1.set_xlabel(feature_names[i])
         axi1.grid()
+        axi1.set_yscale(yscale)
+        if coli == 0:
+            axi1.set_ylabel(y1_label)
+
         axi2 = ax[rowi+2, coli]
-        hb2 = axi2.hexbin(x_test[:,i], med_ratio, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
+        hb2 = axi2.hexbin(x_test[:,i], median_ratios, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
         fig.colorbar(hb2, ax=axi2)
         axi2.set_xlabel(feature_names[i])
         axi2.grid()
+        axi2.set_yscale(yscale)
+        if coli == 0:
+            axi2.set_ylabel(y2_label)
+
     fig.tight_layout()
     if save:
         plt.savefig(output_dir / filename, dpi=dpi)
@@ -716,6 +623,7 @@ def each_param_plots(
 # =============================================================================
 # main
 # =============================================================================
+
 
 
 def main():
@@ -728,24 +636,26 @@ def main():
     # read config, then override with args if given CLI inputs
     config = load_config(args.config, args=args)
 
-    device = elibs.get_device(config['Device'])
+    device = felibs.get_device(config['Device'])
     print(f"Using device: {device}")
 
     verbose = config["Training"]["verbose"]
 
     # load data
-    train_data = elibs.load_data(config["Data"]["train_data"])
+    train_data = felibs.load_data(config["Data"]["train_data"])
     x_train = train_data["x"]
-    coef_train = train_data["coef"]
+    flux_train = train_data["flux_fiducial"]
     mfrac_train = train_data["mfrac"]
+    lamb_obs = train_data["lamb_obs"]
+
     train_param_keys = train_data['train_param_keys']
     default_params = train_data["default_params"]
     prior_dicts = train_data["prior_dicts"]
 
     if config["Data"]["valid_data"] is not None:
-        valid_data = elibs.load_data(config["Data"]["valid_data"])
+        valid_data = felibs.load_data(config["Data"]["valid_data"])
         x_valid = valid_data["x"]
-        coef_valid = valid_data["coef"]
+        flux_valid = valid_data["flux_fiducial"]
         mfrac_valid = valid_data["mfrac"]
     else:
         # if valid_data is not provided, use data split
@@ -755,28 +665,40 @@ def main():
         idx_valid = rng.choice(total_train_idx, size=int(len(x_train)*split_ratio), replace=False)
         idx_train = np.setdiff1d(total_train_idx, idx_valid)
         x_valid = x_train[idx_valid]
-        coef_valid = coef_train[idx_valid]
+        flux_valid = flux_train[idx_valid]
         mfrac_valid = mfrac_train[idx_valid]
         x_train = x_train[idx_train]
-        coef_train = coef_train[idx_train]
+        flux_train = flux_train[idx_train]
         mfrac_train = mfrac_train[idx_train]
 
-    test_data = elibs.load_data(config["Data"]["test_data"])
+    test_data = felibs.load_data(config["Data"]["test_data"])
     x_test = test_data["x"]
-    coef_test = test_data["coef"]
+    flux_test = test_data["flux_fiducial"]
     mfrac_test = test_data["mfrac"]
-    flux_test = test_data["flux"]
 
-    # load PCA
-    # if config["Data"]["pca_file"] is not None:
-    pca_data = np.load(config["Data"]["pca_file"])
-    lbs = pca_data['lbs']
-    pca_modes = pca_data['modes']
-    pca_mean = pca_data['mean']
-    # else:
-        # lbs = None
-        # pca_modes = None
-        # pca_mean = None
+    # TEMP check negative or zero fluxes and interpolate them
+    if verbose:
+        print("check negative or zero fluxes...")
+    for i in range(len(flux_train)):
+        flux_i = flux_train[i]
+        h = flux_i <= 0
+        flux_i_interp = np.interp(lamb_obs[h], lamb_obs[~h], flux_i[~h])
+        flux_i[h] = flux_i_interp
+        flux_train[i] = flux_i
+
+    for i in range(len(flux_valid)):
+        flux_i = flux_valid[i]
+        h = flux_i <= 0
+        flux_i_interp = np.interp(lamb_obs[h], lamb_obs[~h], flux_i[~h])
+        flux_i[h] = flux_i_interp
+        flux_valid[i] = flux_i
+
+    for i in range(len(flux_test)):
+        flux_i = flux_test[i]
+        h = flux_i <= 0
+        flux_i_interp = np.interp(lamb_obs[h], lamb_obs[~h], flux_i[~h])
+        flux_i[h] = flux_i_interp
+        flux_test[i] = flux_i
 
     # first print out some settings on screen
     print(f"Train data:\t{config['Data']['train_data']}")
@@ -785,16 +707,15 @@ def main():
     else:
         print(f"valid/Train split: {config['Data']['valid_split']} (seed={config['Data']['valid_split_seed']})")
     print(f"Test data:\t{config['Data']['test_data']}")
-    print(f"PCA file:\t{config['Data']['pca_file']}")
     
-    print(f"Scaling method: coef={config['Scaler']['coef_scaling']}, mfrac={config['Scaler']['mfrac_scaling']}") 
-    # print(f"\tcoef: ")
+    print(f"Scaling method: flux={config['Scaler']['flux_scaling']}, mfrac={config['Scaler']['mfrac_scaling']}") 
+    # print(f"\tflux: ")
     # print(f"\tmfrac:")
     # print(f"Batch size: train={config["DataLoader"]["train_batch_size"]}, valid={config["DataLoader"]["valid_batch_size"]}")
     print("")
     print(f"Emulator::")
     print(f"\tshared dims: {config['Emulator']['shared_dims']}")
-    print(f"\tcoef head dims: {config['Emulator']['coef_head_dims']}")
+    print(f"\tflux head dims: {config['Emulator']['flux_head_dims']}")
     print(f"\tmfrac head dims: {config['Emulator']['mfrac_head_dims']}")
     print(f"\tactivation: {config['Emulator']['activation']}")
     print(f"\tpredict mfrac: {config['Emulator']['predict_mfrac']}")
@@ -802,7 +723,7 @@ def main():
         print(f"\tdropout: {config['Emulator']['dropout']}")
     # print("")
     print(f"Loss:")
-    print(f"\tcoef loss: {config['Loss']['coef_loss']}")
+    print(f"\tflux loss: {config['Loss']['flux_loss']}")
     print(f"\tmfrac loss: {config['Loss']['mfrac_loss']}")
     print(f"\tmfrac lambda: {config['Loss']['mfrac_lambda']}")
     print(f"Optimizer: {config['Optimizer']['name']}, learning rate={config['Optimizer']['learning_rate']}, weight decay={config['Optimizer']['weight_decay']}")
@@ -812,45 +733,46 @@ def main():
     print(f"\ttrain batch size={config['DataLoader']['train_batch_size']}, valid batch size={config['DataLoader']['valid_batch_size']}, num worker={config['DataLoader']['train_num_workers']}")
     print("")
 
+
     # create Scaler
-    scaler = elibs.EmulatorScaler()
+    scaler = felibs.FluxEmulatorScaler()
     (x_train_scaled, 
-     coef_train_scaled, 
+     flux_train_scaled, 
      mfrac_train_scaled
      ) = scaler.fit_transform(x_train, 
-                              coef_train, 
+                              flux_train, 
                               mfrac_train, 
-                              coef_scaling=config["Scaler"]["coef_scaling"],
+                              flux_scaling=config["Scaler"]["flux_scaling"],
                               mfrac_scaling=config["Scaler"]["mfrac_scaling"])
     (x_valid_scaled, 
-     coef_valid_scaled, 
+     flux_valid_scaled, 
      mfrac_valid_scaled
     ) = scaler.transform(x_valid, 
-                         coef_valid, 
+                         flux_valid, 
                          mfrac_valid)
     (x_test_scaled, 
-     coef_test_scaled, 
+     flux_test_scaled, 
      mfrac_test_scaled
     ) = scaler.transform(x_test, 
-                         coef_test, 
+                         flux_test, 
                          mfrac_test)
 
     x_train_scaled = x_train_scaled.astype(np.float32)
-    coef_train_scaled = coef_train_scaled.astype(np.float32)
+    flux_train_scaled = flux_train_scaled.astype(np.float32)
     mfrac_train_scaled = mfrac_train_scaled.astype(np.float32)
 
     x_valid_scaled = x_valid_scaled.astype(np.float32)
-    coef_valid_scaled = coef_valid_scaled.astype(np.float32)
+    flux_valid_scaled = flux_valid_scaled.astype(np.float32)
     mfrac_valid_scaled = mfrac_valid_scaled.astype(np.float32)
 
     x_test_scaled = x_test_scaled.astype(np.float32)
-    coef_test_scaled = coef_test_scaled.astype(np.float32)
+    flux_test_scaled = flux_test_scaled.astype(np.float32)
     mfrac_test_scaled = mfrac_test_scaled.astype(np.float32)
 
     # Create Dataset objects and DataLoaders
-    train_dataset = elibs.SPSDataset(x_train_scaled, coef_train_scaled, mfrac_train_scaled)
-    valid_dataset = elibs.SPSDataset(x_valid_scaled, coef_valid_scaled, mfrac_valid_scaled)
-    test_dataset = elibs.SPSDataset(x_test_scaled, coef_test_scaled, mfrac_test_scaled)
+    train_dataset = felibs.FluxSPSDataset(x_train_scaled, flux_train_scaled, mfrac_train_scaled)
+    valid_dataset = felibs.FluxSPSDataset(x_valid_scaled, flux_valid_scaled, mfrac_valid_scaled)
+    test_dataset = felibs.FluxSPSDataset(x_test_scaled, flux_test_scaled, mfrac_test_scaled)
 
     use_cuda = device.type == "cuda"
     train_loader = DataLoader(
@@ -881,25 +803,26 @@ def main():
         persistent_workers=(config["DataLoader"]["test_num_workers"]>0),
     )
 
+    # construct the emulator architecture with config settings
     shared_dims = tuple(config["Emulator"]["shared_dims"])
-    if config["Emulator"]["coef_head_dims"] is not None:
-        coef_head_dims = tuple(config["Emulator"]["coef_head_dims"])
+    if config["Emulator"]["flux_head_dims"] is not None:
+        flux_head_dims = tuple(config["Emulator"]["flux_head_dims"])
     else:
-        coef_head_dims = ()
+        flux_head_dims = ()
     if config["Emulator"]["mfrac_head_dims"] is not None:
         mfrac_head_dims = tuple(config["Emulator"]["mfrac_head_dims"])
     else:
         mfrac_head_dims = ()
 
     n_features = x_train.shape[1]
-    n_coefs = coef_train.shape[1]
+    n_fluxes = flux_train.shape[1]
 
     # Create emulator model object with config architecture and send to device
-    model = elibs.SPSEmulator(
+    model = felibs.FluxSPSEmulator(
         n_features=n_features,
-        n_coefs=n_coefs,
+        n_fluxes=n_fluxes,
         shared_dims=shared_dims,
-        coef_head_dims=coef_head_dims,
+        flux_head_dims=flux_head_dims,
         mfrac_head_dims=mfrac_head_dims,
         activation=config["Emulator"]["activation"],
         dropout=config["Emulator"]["dropout"],
@@ -907,22 +830,20 @@ def main():
     ).to(device)
 
     # create criterion object from Loss class and send to device
-    criterion = elibs.EmulatorLoss(
-        coef_loss=config["Loss"]["coef_loss"],
+    criterion = felibs.FluxEmulatorLoss(
+        flux_loss=config["Loss"]["flux_loss"],
+        flux_loss_space=config["Loss"]["flux_loss_space"],
         mfrac_loss=config["Loss"]["mfrac_loss"],
         mfrac_lambda=config["Loss"]["mfrac_lambda"],
-        pca_modes=pca_modes,
-        pca_mean=pca_mean,
-        coef_scale_mean=scaler.coef_mean,
-        coef_scale_std=scaler.coef_std,
-        relative_flux_eps=config["Loss"]["relative_flux_eps"],
-        rmse_eps=config["Loss"]["rmse_eps"],
+        flux_scaling=scaler.flux_scaling,
+        flux_scale_mean=scaler.flux_mean,
+        flux_scale_std=scaler.flux_std,
         max_log10_flux=config["Loss"]["max_log10_flux"],
         wavelength_weights=config["Loss"]["wavelength_weights"]
     ).to(device)
 
     # create optimizer from optimizer class, AFTER creating model
-    optimizer = elibs.make_optimizer(
+    optimizer = felibs.make_optimizer(
         name=config["Optimizer"]["name"],
         parameters=model.parameters(),
         learning_rate=config["Optimizer"]["learning_rate"],
@@ -931,7 +852,7 @@ def main():
 
     train_start_time = time.perf_counter()
     # Actual training run
-    history = elibs.fit_emulator(
+    history = felibs.fit_flux_emulator(
         model=model,
         train_loader=train_loader,
         valid_loader=valid_loader,
@@ -951,7 +872,7 @@ def main():
         print(f"Training time: {format_runtime(train_elapsed_time)}")
 
     # prediction with test set
-    predictions = elibs.predict_emulator(
+    predictions = felibs.predict_flux_emulator(
         model=model,
         x_unscaled=x_test,
         scaler=scaler,
@@ -959,22 +880,19 @@ def main():
         batch_size=config["DataLoader"]["test_batch_size"],
     )
 
-    coef_pred = predictions["coef"]
+    flux_pred = predictions["flux"]
     if 'mfrac' in predictions:
         mfrac_pred = predictions["mfrac"]
     else:
         mfrac_pred = np.zeros(mfrac_test.shape[0])
 
-    log10_flux_pred = coef_pred @ pca_modes + pca_mean
-    flux_pred = 10.0 ** log10_flux_pred
+    # flux_pred = np.log10(flux_pred)
+    # flux_test = np.log10(flux_test)
+    # flux_rel_l2_errs = np.linalg.norm(flux_pred-flux_test, axis=1)/np.linalg.norm(flux_test, axis=1)
+    # flux_median_ratios = np.median(flux_pred/flux_test, axis=1)
 
-    rel_l2_errs = np.linalg.norm(flux_pred-flux_test, axis=1)/np.linalg.norm(flux_test, axis=1)
-    median_ratios = np.median(flux_pred/flux_test, axis=1)
 
-    coefs_rel_l2_errs = np.linalg.norm(coef_pred-coef_test, axis=1)/np.linalg.norm(coef_test, axis=1)
-    coef0_ratios = coef_pred[:,0]/coef_test[:,0]
-
-    test_metrics = elibs.run_epoch(
+    test_metrics = felibs.run_flux_epoch(
         model=model,
         data_loader=test_loader,
         criterion=criterion,
@@ -987,15 +905,16 @@ def main():
 
     if config["Outputs"]["save_plots"]:
         # make plots
-        rel_err_ratio_plots(
-            x=x_test[:,0],
-            flux_rel_l2_err=rel_l2_errs,
-            coef_rel_l2_err=coefs_rel_l2_errs,
-            flux_median_ratio=median_ratios,
-            coef0_ratio=coef0_ratios,
+        rel_flux_err_plot(
+            flux_pred=flux_pred,
+            flux_true=flux_test,
+            lamb_obs=lamb_obs,
+            # flux_scale='log10',
+            flux_scale='linear',
+            yscale='linear',
             save=True,
             output_dirname=config["Outputs"]["outputs_dir"],
-            filename="rel_err_ratio.png",
+            filename="rel_flux_err_plot.png"
         )
 
         mfrac_plots(
@@ -1006,25 +925,17 @@ def main():
             filename="mfrac_plots.png"
         )
 
-        coef_plots(
-            coef_test,
-            coef_pred,
-            style="hexbin",
-            save=True,
-            output_dirname=config["Outputs"]["outputs_dir"],
-            filename="coef_plots.png"
-        )
-
         each_param_plots(
             x_test,
-            rel_l2_errs,
-            median_ratios,
+            flux_pred=flux_pred,
+            flux_true=flux_test,
+            # flux_scale='log10',
+            flux_scale='linear',
+            yscale='linear',
             feature_names=train_param_keys,
             save=True,
             output_dirname=config["Outputs"]["outputs_dir"],
             filename="param_plots.png"
-            # filename1="param_plots_rel_l2_err.png",
-            # filename2="param_plots_med_ratio.png"
         )
 
 
@@ -1035,9 +946,7 @@ def main():
 
         "scaler_state": scaler.state_dict(),
 
-        "pca_lbs": np.asarray(lbs),
-        "pca_modes": np.asarray(pca_modes),
-        "pca_mean": np.asarray(pca_mean),
+        "lamb_obs": np.asarray(lamb_obs),
 
         "optimizer_name": optimizer.__class__.__name__,
         "optimizer_defaults": optimizer.defaults.copy(),
@@ -1067,7 +976,7 @@ def main():
 
     # Warm up before timing
     for _ in range(20):
-        _ = elibs.predict_one(
+        _ = felibs.predict_flux_one(
             model=model_cpu,
             x=x_test_one,
             device=torch.device("cpu"),
@@ -1077,7 +986,7 @@ def main():
     n_repeats = 1000
     start_time = time.perf_counter()
     for _ in range(n_repeats):
-        _ = elibs.predict_one(
+        _ = felibs.predict_flux_one(
             model=model_cpu,
             x=x_test_one,
             device=torch.device("cpu"),
@@ -1088,11 +997,10 @@ def main():
 
     if verbose:
         print(f"CPU single-object mean inference time: {mean_seconds*1e6:.4f} us (from {n_repeats} calls)")
-        # print(f"Number of calls: {n_repeats}")
-        # print(f"Total time:      {elapsed_time:.6f} s")
-        # print(f"Mean per call:   {mean_seconds * 1e3:.6f} ms")
-        # print(f"Rate:            {1.0 / mean_seconds:.2f} calls/s")
 
 if __name__ == '__main__':
     main()
+
+
+
 

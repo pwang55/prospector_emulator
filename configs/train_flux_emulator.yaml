@@ -4,17 +4,16 @@ Data:
   valid_split_seed: 42
   valid_data: random_samples/valid/valid_x_coef_mfrac_flux_10k.h5
   test_data: random_samples/test/test_x_coef_mfrac_flux_10k.h5
-  pca_file: random_samples/pca/log10_flux_pca_modes_100k.npz
 
 Device: auto
 
 Scaler:
-  coef_scaling: none                    # none, standard, coef0
-  mfrac_scaling: standard               # none, standard, match_coef0
+  flux_scaling: log10_standard                    # none, standard, global_standard, log10_none, log10_standard, log10_global_standard
+  mfrac_scaling: standard               # none, standard
 
 DataLoader:
-  train_batch_size: 500
-  valid_batch_size: 500
+  train_batch_size: 1000
+  valid_batch_size: 1000
   train_num_workers: 4
   # train_persistent_workers: 2
   train_shuffle: True
@@ -26,19 +25,18 @@ DataLoader:
   test_shuffle: True
 
 Emulator:
-  shared_dims: [512, 512, 512, 512]
-  coef_head_dims: 
+  shared_dims: [1024, 1024, 1024, 1024]
+  flux_head_dims: 
   mfrac_head_dims: 
   activation: gelu                      # gelu, relu, silu, elu, tanh, leaky_relu
   dropout: 0.0
   predict_mfrac: True
 
 Loss:
-  coef_loss: mae                        # mse, rmse, mae, logflux_mse, logflux_mae, flux_mse, flux_mae, relative_flux_mse, relative_flux_mae
-  mfrac_loss: mse                       # mse, rmse, mae
-  mfrac_lambda: 0.005
-  relative_flux_eps: 1.0E-8
-  rmse_eps: 1.0E-12
+  flux_loss: mae                        # mse, mae
+  flux_loss_space: scaled               # scaled, log10, linear
+  mfrac_loss: mae                       # mse, mae
+  mfrac_lambda: 0.0001
   max_log10_flux:
   wavelength_weights:
 
@@ -52,14 +50,14 @@ Training:
   max_epochs: 800
   patience: 50
   abs_tol: 0.0
-  rel_tol: 0.01
+  rel_tol: 0.001
   monitor: total                        # total, coef, mfrac
   verbose: True
 
 Outputs:
-  outputs_dir: emulator_outputs
+  outputs_dir: flux_emulator_outputs
   save_plots: True
   # plot_dir: 
   save_emulator: True
   # emulator_dir: 
-  emulator_filename: emulator.pt
+  emulator_filename: flux_emulator.pt

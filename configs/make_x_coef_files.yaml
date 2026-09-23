@@ -15,15 +15,15 @@ scaling: False
 
 train_log10flux_filenames:
   - random_samples/train/train_log10flux_x_mfrac_z3_100k.h5
-  - random_samples/train/train_log10flux_x_mfrac_z04_50k.h5
+  # - random_samples/train/train_log10flux_x_mfrac_z04_50k.h5
 
 valid_log10flux_filenames:
   - random_samples/valid/valid_log10flux_x_mfrac_z3_10k.h5
-  - random_samples/valid/valid_log10flux_x_mfrac_z04_5k.h5
+  # - random_samples/valid/valid_log10flux_x_mfrac_z04_5k.h5
 
 test_log10flux_filenames:
   - random_samples/test/test_log10flux_x_mfrac_z3_10k.h5
-  - random_samples/test/test_log10flux_x_mfrac_z04_5k.h5
+  # - random_samples/test/test_log10flux_x_mfrac_z04_5k.h5
 
 # ============================================
 # target file names and location
