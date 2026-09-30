@@ -1,7 +1,7 @@
 """
 
 Usage:
-    $ python train_emulator.py --config train_config.yaml
+    $ python train_pca_emulator.py --config train_pca_emulator.yaml
 
 """
 import numpy as np
@@ -15,7 +15,7 @@ import yaml
 from pathlib import Path
 import argparse
 import json
-import libs.emulator_libs as elibs
+import libs.pca_emulator_libs as elibs
 import time
 from datetime import timedelta
 
@@ -589,6 +589,7 @@ def coef_plots(
         markersize=4,
         markeralpha=0.2,
         markercolor_label="",
+        nrowcol=None,
         gridsize=100,
         bins="log",
         save=False,
@@ -600,26 +601,40 @@ def coef_plots(
     output_dir = Path(output_dirname)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(4, 5, figsize=figsize)
-    for i in range(coef_true.shape[1]):
-        rowi = i // 5
-        coli = i % 5
-        if style == "scatter":
-            sc = ax[rowi, coli].scatter(coef_true[:,i], coef_pred[:,i], s=markersize, c=markercolor_data[:,0], alpha=markeralpha, **kwargs)
-            xmin, xmax = ax[rowi, coli].get_xlim()
+    ncoefs = coef_true.shape[1]
+    if nrowcol is None:
+        ncols = int(np.ceil(np.sqrt(ncoefs)))
+        nrows = int(np.ceil(ncoefs / ncols))
+    else:
+        nrows = nrowcol[0]
+        ncols = nrowcol[1]
+        if nrows * ncols < ncoefs:
+            raise ValueError(f'Figure with ({nrows},{ncols}) subplots are not enough for {ncoefs} parameters')
 
-        elif style == "hexbin":
-            ax[rowi, coli].scatter(coef_true[:,i], coef_pred[:,i], s=markersize, alpha=0.0)
-            xmin, xmax = ax[rowi, coli].get_xlim()
-            ax[rowi, coli].clear()
-            hb = ax[rowi, coli].hexbin(coef_true[:,i], coef_pred[:,i], gridsize=gridsize, extent=[xmin, xmax, xmin, xmax], bins=bins, **kwargs)
-            fig.colorbar(hb, ax=ax[rowi, coli])
+    fig, ax = plt.subplots(nrows, ncols, figsize=figsize)
+    for i in range(nrows*ncols):
+        rowi = i // ncols
+        coli = i % ncols
+        axi = ax[rowi, coli]
+        if i < ncoefs:
+            if style == "scatter":
+                sc = axi.scatter(coef_true[:,i], coef_pred[:,i], s=markersize, c=markercolor_data[:,0], alpha=markeralpha, **kwargs)
+                xmin, xmax = axi.get_xlim()
 
-        ax[rowi, coli].set_xlim(xmin, xmax)
-        ax[rowi, coli].set_ylim(xmin, xmax)
-        ax[rowi, coli].plot([xmin, xmax], [xmin, xmax], linewidth=0.8, alpha=0.6, color='tab:red')
-        ax[rowi, coli].set_title(f'coef {i}')
-        ax[rowi, coli].grid(alpha=0.4)
+            elif style == "hexbin":
+                axi.scatter(coef_true[:,i], coef_pred[:,i], s=markersize, alpha=0.0)
+                xmin, xmax = axi.get_xlim()
+                axi.clear()
+                hb = axi.hexbin(coef_true[:,i], coef_pred[:,i], gridsize=gridsize, extent=[xmin, xmax, xmin, xmax], bins=bins, **kwargs)
+                fig.colorbar(hb, ax=axi)
+
+            axi.set_xlim(xmin, xmax)
+            axi.set_ylim(xmin, xmax)
+            axi.plot([xmin, xmax], [xmin, xmax], linewidth=0.8, alpha=0.6, color='tab:red')
+            axi.set_title(f'coef {i}')
+            axi.grid(alpha=0.4)
+        else:
+            axi.set_visible(False)
 
     if style == "scatter":
         fig.subplots_adjust(right=0.85, wspace=0.1, hspace=0.25)
@@ -637,6 +652,7 @@ def each_param_plots(
         med_ratio,
         feature_names=None,
         figsize=(14, 12),
+        nrowcol=None,
         gridsize=100,
         ymin1=-0.02,
         ymax1=0.5,
@@ -658,56 +674,40 @@ def each_param_plots(
     if feature_names is None:
         feature_names = [f"param{i}" for i in range(n_features)]
 
-    # TODO automatically decide dimension based on input number of templates
-    # fig1, ax1 = plt.subplots(2, 5, figsize=figsize)
+    if nrowcol is None:
+        # nrows = int(np.ceil(np.sqrt(n_features))) # calculate the nrow as if the plot is square, take the smallest number that accommodate it
+        # ncols = int(np.ceil(n_features / nrows))  # use the above nrows, calculate the resulting ncols and round up
+        # TEMP
+        nrows = 4
+        ncols = (n_features // 2) + ((n_features % 2)>0)
+    else:
+        nrows = nrowcol[0]
+        ncols = nrowcol[1]
+        # if nrows * ncols < n_features:
+            # raise ValueError(f'Figure with ({nrows},{ncols}) subplots are not enough for {n_features} parameters')
 
-    # for i in range(x_test.shape[1]):
-    #     rowi = i // 5
-    #     coli = i % 5
-    #     axi = ax1[rowi, coli]
-    #     xmin = np.min(x_test[:,i])
-    #     xmax = np.max(x_test[:,i])
-    #     hb = axi.hexbin(x_test[:,i], rel_l2_err, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)
-    #     fig1.colorbar(hb, ax=axi)
-    #     axi.set_xlabel(feature_names[i])
-    #     axi.grid()
-    # fig1.tight_layout()
-    # if save:
-    #     plt.savefig(output_dir / filename1, dpi=dpi)
-    #     plt.close()
-
-    # fig2, ax2 = plt.subplots(2, 5, figsize=figsize)
-    # for i in range(x_test.shape[1]):
-    #     rowi = i // 5
-    #     coli = i % 5
-    #     axi = ax2[rowi, coli]
-    #     xmin = np.min(x_test[:,i])
-    #     xmax = np.max(x_test[:,i])
-    #     hb = axi.hexbin(x_test[:,i], med_ratio, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
-    #     fig2.colorbar(hb, ax=axi)
-    #     axi.set_xlabel(feature_names[i])
-    #     axi.grid()
-    # fig2.tight_layout()
-    # if save:
-    #     plt.savefig(output_dir / filename2, dpi=dpi)
-    #     plt.close()
-
-    fig, ax = plt.subplots(4, 5, figsize=figsize)
-    for i in range(x_test.shape[1]):
-        rowi = i // 5
-        coli = i % 5
+    fig, ax = plt.subplots(nrows, ncols, figsize=figsize)
+    for i in range(int(nrows*ncols/2)):
+        rowi = i // ncols
+        coli = i % ncols
         axi1 = ax[rowi, coli]
-        xmin = np.min(x_test[:,i])
-        xmax = np.max(x_test[:,i])
-        hb1 = axi1.hexbin(x_test[:,i], rel_l2_err, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)        
-        fig.colorbar(hb1, ax=axi1)
-        axi1.set_xlabel(feature_names[i])
-        axi1.grid()
         axi2 = ax[rowi+2, coli]
-        hb2 = axi2.hexbin(x_test[:,i], med_ratio, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
-        fig.colorbar(hb2, ax=axi2)
-        axi2.set_xlabel(feature_names[i])
-        axi2.grid()
+        if i < n_features:
+            xmin = np.min(x_test[:,i])
+            xmax = np.max(x_test[:,i])
+            hb1 = axi1.hexbin(x_test[:,i], rel_l2_err, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)        
+            fig.colorbar(hb1, ax=axi1)
+            axi1.set_xlabel(feature_names[i])
+            axi1.grid()
+            axi2 = ax[rowi+2, coli]
+            hb2 = axi2.hexbin(x_test[:,i], med_ratio, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
+            fig.colorbar(hb2, ax=axi2)
+            axi2.set_xlabel(feature_names[i])
+            axi2.grid()
+        else:
+            axi1.set_visible(False)
+            axi2.set_visible(False)
+
     fig.tight_layout()
     if save:
         plt.savefig(output_dir / filename, dpi=dpi)
@@ -728,13 +728,13 @@ def main():
     # read config, then override with args if given CLI inputs
     config = load_config(args.config, args=args)
 
-    device = elibs.get_device(config['Device'])
+    device = elibs.efuncs.get_device(config['Device'])
     print(f"Using device: {device}")
 
     verbose = config["Training"]["verbose"]
 
     # load data
-    train_data = elibs.load_data(config["Data"]["train_data"])
+    train_data = elibs.efuncs.load_data(config["Data"]["train_data"])
     x_train = train_data["x"]
     coef_train = train_data["coef"]
     mfrac_train = train_data["mfrac"]
@@ -743,7 +743,7 @@ def main():
     prior_dicts = train_data["prior_dicts"]
 
     if config["Data"]["valid_data"] is not None:
-        valid_data = elibs.load_data(config["Data"]["valid_data"])
+        valid_data = elibs.efuncs.load_data(config["Data"]["valid_data"])
         x_valid = valid_data["x"]
         coef_valid = valid_data["coef"]
         mfrac_valid = valid_data["mfrac"]
@@ -761,7 +761,7 @@ def main():
         coef_train = coef_train[idx_train]
         mfrac_train = mfrac_train[idx_train]
 
-    test_data = elibs.load_data(config["Data"]["test_data"])
+    test_data = elibs.efuncs.load_data(config["Data"]["test_data"])
     x_test = test_data["x"]
     coef_test = test_data["coef"]
     mfrac_test = test_data["mfrac"]
@@ -922,7 +922,7 @@ def main():
     ).to(device)
 
     # create optimizer from optimizer class, AFTER creating model
-    optimizer = elibs.make_optimizer(
+    optimizer = elibs.efuncs.make_optimizer(
         name=config["Optimizer"]["name"],
         parameters=model.parameters(),
         learning_rate=config["Optimizer"]["learning_rate"],
@@ -987,16 +987,18 @@ def main():
 
     if config["Outputs"]["save_plots"]:
         # make plots
-        rel_err_ratio_plots(
-            x=x_test[:,0],
-            flux_rel_l2_err=rel_l2_errs,
-            coef_rel_l2_err=coefs_rel_l2_errs,
-            flux_median_ratio=median_ratios,
-            coef0_ratio=coef0_ratios,
-            save=True,
-            output_dirname=config["Outputs"]["outputs_dir"],
-            filename="rel_err_ratio.png",
-        )
+        if 'zred' in train_param_keys:
+            idx_zred = train_param_keys.index('zred')
+            rel_err_ratio_plots(
+                x=x_test[:,idx_zred],
+                flux_rel_l2_err=rel_l2_errs,
+                coef_rel_l2_err=coefs_rel_l2_errs,
+                flux_median_ratio=median_ratios,
+                coef0_ratio=coef0_ratios,
+                save=True,
+                output_dirname=config["Outputs"]["outputs_dir"],
+                filename="rel_err_ratio.png",
+            )
 
         mfrac_plots(
             mfrac_test,

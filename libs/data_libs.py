@@ -34,7 +34,7 @@ twomass_cols = ['2MASS_J', '2MASS_H', '2MASS_Ks']
 wise_cols = ['WISE_W1', 'WISE_W2', 'WISE_W3', 'WISE_W4']
 all_refcat_surveys = [LS_cols, PS1_cols, twomass_cols, wise_cols]
 
-
+# TODO a new version that use pyarrow dataset with optional filters, and new names to replace zphot
 class catalog:
     """
     Read input SPHEREx data format and convert to useful arrays

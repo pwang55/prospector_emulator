@@ -15,8 +15,8 @@ Notes:
 
 # os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
-import pandas as pd
-import pyarrow.dataset as ds
+# import pandas as pd
+# import pyarrow.dataset as ds
 import yaml
 # import emcee
 # import multiprocessing
@@ -75,20 +75,12 @@ def parse_args():
         help='SPHEREx catalog name'
     )
     parser.add_argument(
-        '-fl',
-        '--filter-list',
-        type=str,
-        default=None,
-        metavar='<str>',
-        help='SPHEREx fiducial_filters.txt path'
-    )
-    parser.add_argument(
         '-e',
         '--emulator',
         type=str,
         default=None,
         metavar='<str>',
-        help='Trained pytorch emulator.pt path'
+        help='Trained pytorch flux_emulator.pt path'
     )
     parser.add_argument(
         '-nw',
@@ -151,6 +143,21 @@ def parse_args():
         action='store_true',
         default=None,
         help='Use python multiprocessing'
+    )
+    parser.add_argument(
+        '-vc',
+        '--vectorize',
+        action='store_true',
+        default=None,
+        help='vectorize emcee log_probability evaluation'
+    )
+    parser.add_argument(
+        '-nvc',
+        '--no-vectorize',
+        dest="vectorize",
+        action='store_false',
+        default=None,
+        help="don't vectorize emcee log_probability evaluation"
     )
     parser.add_argument(
         '-np',
@@ -272,9 +279,9 @@ def main():
     verbose = yaml_config['MCMC']['verbose'] if args.verbose is None else args.verbose
 
     if sampler_filename == 'use_id':
-        sampler_filename = f"emulator_mcmc_results_sampler_{spherex_id}.h5"
+        sampler_filename = f"flux_emulator_mcmc_results_sampler_{spherex_id}.h5"
     if output_filename == 'use_id':
-        output_filename = f"emulator_mcmc_results_report_{spherex_id}.h5"
+        output_filename = f"flux_emulator_mcmc_results_report_{spherex_id}.h5"
 
     sampler_filename = output_dir + "/" + sampler_filename
 
@@ -286,7 +293,7 @@ def main():
     if verbose:
         print("Creating MCMC instance...")
     tstart = time.time()
-    emcmc_obj = mlibs.emulator_mcmc(
+    emcmc_obj = mlibs.FluxEmulatorMCMC(
         config_filename=config,
         emulator=args.emulator,
         nwalkers=args.nwalkers,
@@ -295,8 +302,8 @@ def main():
         discard=args.discard,
         thin=args.thin,
         zprior=args.zprior,
-        filters=args.filter_list,
         parallel=args.parallel,
+        vectorize=args.vectorize,
         n_processes=args.nprocesses,
         verbose=args.verbose,
         output_dir=args.output_dir,
@@ -315,7 +322,8 @@ def main():
             \n\tdiscard: \t{emcmc_obj.discard} \
             \n\tthin:    \t{emcmc_obj.thin} \
             \n\tzprior:  \t{emcmc_obj.zprior} \
-            \n\tparallel:\t{emcmc_obj.parallel}')
+            \n\tparallel:\t{emcmc_obj.parallel} \
+            \n\tvectorize:\t{emcmc_obj.vectorize}')
         
         print('Run MCMC...')
 
@@ -333,38 +341,20 @@ def main():
     if verbose:
         mlibs.display_fits(theta_percentiles=results["theta_percentiles"], keys=emcmc_obj.free_param_keys)
 
-
-    # get lamb_obs for plotting purpose
-    filter_list = yaml_config['Files']['filters'] if args.filter_list is None else args.filter_list
-    try:
-        filter_list_filename = filter_list.split('/')[-1]
-        filter_central_wavelengths = filter_list.replace(filter_list_filename, 'fiducial_filters_cent_waves.txt')
-        lamb_obs = np.genfromtxt(filter_central_wavelengths, delimiter=' ')[:,1]
-    except:
-        filters = dlibs.read_filters(filter_list)
-        nfilt = filters.shape[0]
-        lamb_obs = np.zeros(nfilt)
-        threshold = 0.1
-        for i in range(nfilt):
-            lamb_i = filters[i][0]
-            res_i = filters[i][1] / np.max(filters[i][1])
-            mask = res_i > threshold
-            lamb_obs[i] = np.sum(lamb_i[mask]*res_i[mask])/np.sum(res_i[mask])
-
-
+    lamb_obs = emcmc_obj.lamb_obs
 
     # ------------- save plot block ---------------
     if save_plots:
         mlibs.plot_chain(emcmc_obj.full_samples,
                    ylabels=emcmc_obj.free_param_keys,
                    save=True,
-                   filename=f'mcmc_results_chains_{spherex_id}.png',
+                   filename=f'flux_mcmc_results_chains_{spherex_id}.png',
                    output_dirname=plots_dir)
 
         mlibs.plot_corner(results['flat_samples'],
                     ylabels=emcmc_obj.free_param_keys,
                     save=True,
-                    filename=f'mcmc_results_corner_{spherex_id}.png',
+                    filename=f'flux_mcmc_results_corner_{spherex_id}.png',
                     output_dirname=plots_dir
                     )
         
@@ -382,17 +372,16 @@ def main():
             mlibs.plot_sed_sfh(lamb_obs,
                          cat.spec,
                          cat.err,
-                         lamb_model=results["lbs_med"],
-                         spec_model=results['flux_med'],
+                         spec_model=results['flux_fiducial_med'],
                          agelims_model=results['agebins_med'],
                          sfrsteps_model=results['sfrs_med'],
                          qs_agelims=qs_agelims,
                          qs_sfrsteps=qs_agebins_all_sfrs,
                          external_phots=cat.external_phots,
                          save=True,
-                         wl_min=0.2,
-                         wl_max=5.5,
-                         filename=f"mcmc_results_sed_sfh_{spherex_id}.png",
+                         wl_min=0.5,
+                         wl_max=5.3,
+                         filename=f"flux_mcmc_results_sed_sfh_{spherex_id}.png",
                          output_dirname=plots_dir,
                          title_kwargs={
                             'spherex_id': spherex_id,
@@ -436,7 +425,8 @@ def main():
                         'discard': emcmc_obj.discard,
                         'thin': emcmc_obj.thin,
                         'zprior': emcmc_obj.zprior,
-                        'parallel': emcmc_obj.parallel
+                        'parallel': emcmc_obj.parallel,
+                        'vectorize': emcmc_obj.vectorize
                         }
                     )
     if verbose:

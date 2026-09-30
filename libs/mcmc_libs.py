@@ -1,32 +1,20 @@
-# import os
 import numpy as np
-# import pandas as pd
-# import pyarrow.dataset as ds
+from scipy.stats import norm, t, lognorm, loguniform, truncnorm
+from functools import partial
+import matplotlib.pyplot as plt
+from pathlib import Path
+from IPython.display import display, Math
+import corner
+from pprint import pprint
+import libs.pca_emulator_libs as elibs
+import libs.flux_emulator_libs as flibs
+import libs.data_libs as dlibs
+import libs.sps_libs as spslibs
+import torch
+import copy
 import yaml
 import emcee
 import multiprocessing
-from scipy.stats import norm, t, lognorm, loguniform, truncnorm
-from functools import partial
-# import custom_prospector_tools as cpt
-# from types import SimpleNamespace
-import matplotlib.pyplot as plt
-# from astropy.cosmology import Planck18
-from pathlib import Path
-import corner
-from IPython.display import display, Math
-# from IPython import get_ipython
-# import sedpy
-# import argparse
-# import gc
-import time
-from datetime import datetime
-import h5py
-# from numba import njit
-import copy
-import libs.emulator_libs as elibs
-import libs.data_libs as dlibs
-import libs.sps_libs as spslibs
-from pprint import pprint
 
 # ---------------------------------------------------------
 # Built-in defaults
@@ -49,6 +37,7 @@ default_configs = {
         "thin": 10,
         "zprior": True,
         "parallel": False,
+        "vectorize": False,
         "n_processes": 4,
         "verbose": True
     },
@@ -199,7 +188,7 @@ default_configs = {
     }
 
 
-def apply_overrides(config, overrides):
+def apply_config_overrides(config, overrides):
     for key, value in overrides.items():
 
         if value is None:
@@ -216,6 +205,7 @@ def apply_overrides(config, overrides):
             target = target[part]
 
         target[parts[-1]] = value
+
 
 
 # ===========================================
@@ -435,6 +425,7 @@ def plot_chain(samples,
         plt.savefig(output_dir / filename, dpi=dpi)
 
 
+
 def plot_corner(flat_samples,
                 ylabels=None,
                 figsize=(14,14),
@@ -496,12 +487,11 @@ def plot_corner(flat_samples,
         plt.savefig(output_dir / filename, dpi=dpi)
 
 
-
 def plot_sed_sfh(lamb_obs,
                  spec_obs,
                  err_obs,
-                 lamb_model,
                  spec_model,
+                 lamb_model=None,
                  agelims_model=None,
                  sfrsteps_model=None,
                  qs_agelims=None,
@@ -629,9 +619,21 @@ def plot_sed_sfh(lamb_obs,
     sed_obs_kwargs.setdefault('capsize', 2)
     sed_obs_kwargs.setdefault('alpha', 0.7)
 
-    sed_model_kwargs.setdefault('linewidth', 1)
-    sed_model_kwargs.setdefault('color', 'tab:orange')
-    sed_model_kwargs.setdefault('alpha', 0.9)
+    if lamb_model is None and len(spec_model) == len(lamb_obs):
+        lamb_model = lamb_obs
+        # spec_model is fiducial flux so plotting dots with no lines
+        sed_model_kwargs.setdefault('linestyle', 'none')
+        sed_model_kwargs.setdefault('marker', '.')
+        sed_model_kwargs.setdefault('markersize', 4)
+        sed_model_kwargs.setdefault('color', 'tab:orange')
+        sed_model_kwargs.setdefault('alpha', 0.9)
+
+    else:
+        # if lamb_model is provided or if spec_model is not the same shape as lamb_obs,
+        # model is likely high-res model, so plot line
+        sed_model_kwargs.setdefault('linewidth', 1)
+        sed_model_kwargs.setdefault('color', 'tab:orange')
+        sed_model_kwargs.setdefault('alpha', 0.9)    
 
     sed_external_phot_kwargs.setdefault('fmt', 'o')
     sed_external_phot_kwargs.setdefault('elinewidth', 1)
@@ -670,11 +672,14 @@ def plot_sed_sfh(lamb_obs,
                             err_obs[nonzeros],
                             **sed_obs_kwargs,
                             label='Observed spectra')
+            ymin0 , ymax0 = axi.get_ylim()  # TEMP
+            axi.set_ylim(ymin0, ymax0)
 
             axi.plot(lamb_model,
-                        spec_model,
-                        **sed_model_kwargs,
-                        label='Medium model')
+                    spec_model,
+                    **sed_model_kwargs,
+                    label='Medium model')
+
             axi.grid()
             lbs_mins = [np.min(lamb_obs)]
             lbs_maxs = [np.max(lamb_obs)]
@@ -824,6 +829,7 @@ def plot_sed_sfh(lamb_obs,
         plt.savefig(output_dir / filename, dpi=dpi)
 
 
+
 def display_fits(theta_percentiles, keys=None):
     """
     Display function for median parameters and uncertainty from MCMC
@@ -857,11 +863,82 @@ def display_fits(theta_percentiles, keys=None):
             print(f"{keys[i]}=\t{median_theta[i]:.3f}\t+{sigma_theta[1][i]:.3f}\t-{sigma_theta[0][i]:.3f}")
 
 
+
+def torch_batch_interp1d(x_grid, y_batch, x_target):
+    """
+    Linear interpolation for a batch of y arrays sharing one x grid.
+
+    Parameters
+    ----------
+    x_grid : tensor, shape (n_grid,)
+    y_batch : tensor, shape (n_batch, n_grid)
+    x_target : tensor, shape (n_batch, n_target)
+
+    Returns
+    -------
+    y_target : tensor, shape (n_batch, n_target)
+
+    Outside x_grid, behaves like np.interp:
+    use the endpoint value.
+    """
+
+    idx_hi = torch.searchsorted(x_grid, x_target)
+    idx_hi = idx_hi.clamp(1, len(x_grid) - 1)
+    idx_lo = idx_hi - 1
+
+    x0 = x_grid[idx_lo]
+    x1 = x_grid[idx_hi]
+
+    y0 = torch.gather(y_batch, 1, idx_lo)
+    y1 = torch.gather(y_batch, 1, idx_hi)
+
+    weight = (x_target - x0) / (x1 - x0)
+    y_target = y0 + weight * (y1 - y0)
+
+    # match np.interp endpoint behavior
+    y_target = torch.where(x_target <= x_grid[0], y_batch[:, :1], y_target)
+    y_target = torch.where(x_target >= x_grid[-1], y_batch[:, -1:], y_target)
+
+    return y_target
+
+def torch_interp1d_setup(x_grid, x_target):
+    idx_hi = torch.searchsorted(x_grid, x_target)
+    idx_hi = idx_hi.clamp(1, len(x_grid) - 1)
+    idx_lo = idx_hi - 1
+
+    x0 = x_grid[idx_lo]
+    x1 = x_grid[idx_hi]
+
+    weight = (x_target - x0) / (x1 - x0)
+
+    below = x_target <= x_grid[0]
+    above = x_target >= x_grid[-1]
+
+    return idx_lo, idx_hi, weight, below, above
+
+def torch_interp1d_apply(
+    y_batch,
+    idx_lo,
+    idx_hi,
+    weight,
+    below,
+    above,
+):
+    y0 = y_batch[:, idx_lo]
+    y1 = y_batch[:, idx_hi]
+
+    y = y0 + weight.unsqueeze(0) * (y1 - y0)
+    y = torch.where(below.unsqueeze(0), y_batch[:, :1], y)
+    y = torch.where(above.unsqueeze(0), y_batch[:, -1:], y)
+
+    return y
+
+
 # ===========================================
 # Main emulator_mcmc class
 # ===========================================
 
-class emulator_mcmc:
+class BaseEmulatorMCMC:
     """
 
     """
@@ -875,8 +952,8 @@ class emulator_mcmc:
             discard=None,
             thin=None,
             zprior=None,
-            filters=None,
             parallel=None,
+            vectorize=None,
             n_processes=None,
             verbose=None,
             output_dir=None,
@@ -885,21 +962,23 @@ class emulator_mcmc:
             output_filename=None,
             save_plots=None,
             plots_dir=None,
-            ): 
+        ):
 
-        # initialize emulator and filters to None
+        # initialize emulator to None
         self.emulator = None
-        self.filters = None
 
         # copy a version of default_configs
         self.config = copy.deepcopy(default_configs)
+        # subclass gets a chance to modify defaults
+        self._modify_default_config()
+
         # if config file is provided, override the defaults
         if config_filename is not None:
             with open(config_filename, "r") as file:
                 yaml_config = yaml.safe_load(file)
             self.config.update(yaml_config)
 
-        apply_overrides(
+        apply_config_overrides(
             self.config,
             {
                 "MCMC.nwalkers": nwalkers,
@@ -909,9 +988,9 @@ class emulator_mcmc:
                 "MCMC.thin": thin,
                 "MCMC.zprior": zprior,
                 "MCMC.parallel": parallel,
+                "MCMC.vectorize": vectorize,
                 "MCMC.n_processes": n_processes,
                 "MCMC.verbose": verbose,
-                "Files.filters": filters,
                 "Outputs.output_dir": output_dir,
                 "Outputs.save_sampler": save_sampler,
                 "Outputs.sampler_filename": sampler_filename,
@@ -929,6 +1008,7 @@ class emulator_mcmc:
         self.thin = self.config["MCMC"]["thin"]
         self.zprior = self.config["MCMC"]["zprior"]
         self.parallel = self.config["MCMC"]["parallel"]
+        self.vectorize = self.config["MCMC"]["vectorize"]
         self.n_processes = self.config["MCMC"]["n_processes"]
         self.verbose = self.config["MCMC"]["verbose"]
         self.output_dir = self.config["Outputs"]["output_dir"]
@@ -938,55 +1018,40 @@ class emulator_mcmc:
         self.plots_dir = self.config["Outputs"]["plots_dir"]
         self.save_plots = self.config["Outputs"]["save_plots"]
 
-        self.filters = self._resolve_filters(self.config["Files"]["filters"])
         self.emulator = self._resolve_emulator(emulator)
         self.prior_dicts = None
         self.logprior_funcs = None
-        # self._mcmc_setup_signature = None
 
         self.user_prior = copy.deepcopy(self.config["prior_dicts"])
-
         # create self.prior_dicts and self.logprior_funcs from emulator and config
         if self.emulator is not None:
             self.setup_mcmc()
 
-    def _resolve_emulator(self, emulator=None):
-        # Explicitly supplied
-        if emulator is not None:
-            if isinstance(emulator, elibs.LoadedSPSEmulator):
-                return emulator
+    def _modify_default_config(self):
+        pass
 
-            # Otherwise assume it is a filename/path
-            return elibs.LoadedSPSEmulator(emulator)
-
-        # Try config
-        emulator_path = self.config.get("emulator")
-
-        if emulator_path is not None:
-            return elibs.LoadedSPSEmulator(emulator_path)
-
-        # Allow incomplete construction
-        return None
-
-    @staticmethod
-    def _resolve_filters(filters):
-        if filters is False:
-            return None
-
-        if isinstance(filters, (str, Path)):
-            return dlibs.read_filters(filters, return_unique_inverse=True)
-
-        return filters
+    def _setup_emulator_specific_state(self):
+        pass
 
     def check_mcmc_ready(self):
         missing = []
         if self.emulator is None:
             missing.append("emulator")
-        # if self.filters is None:
-            # missing.append("filters")
         if missing:
             raise RuntimeError("MCMC is not ready. Missing required attributes: " + ", ".join(missing))
         return True
+
+    def _setup_vectorized_device(self):
+        """
+        Put the emulator on the automatically selected device for
+        vectorized MCMC evaluation.
+        """
+        self.emulator.to("auto")
+        self.device = self.emulator.device
+        self._setup_vectorized_static_state()
+
+    def _setup_vectorized_static_state(self):
+        pass
 
     @staticmethod
     def build_mcmc_prior_dicts(mcmc_prior_dicts, emulator_prior_dicts):
@@ -1060,6 +1125,7 @@ class emulator_mcmc:
 
         return prior_dicts, fixed_dicts
 
+
     @staticmethod
     def build_logprior_funcs(prior_dicts, train_param_keys):
         """
@@ -1112,12 +1178,16 @@ class emulator_mcmc:
             raise RuntimeError(
                 "Cannot set up MCMC without an emulator."
             )
+
+        # this will do nothing in PCA, in FluxEmulatorMCMC it is defined to set self.lamb_obs
+        self._setup_emulator_specific_state()
         
         if prior is None:
             prior_input = self.config["prior_dicts"]
         else:
             prior_input = prior
 
+        self.train_param_keys = self.emulator.train_param_keys
         # ---------------------------------------------------------
         # Build free-prior and fixed-parameter dictionaries
         # ---------------------------------------------------------
@@ -1125,10 +1195,12 @@ class emulator_mcmc:
             prior_input, 
             self.emulator.prior_dicts
             )
+        for key, value in self.emulator.default_params.items():
+            if key not in self.train_param_keys:
+                self.fixed_dicts.setdefault(key, value)
         # ---------------------------------------------------------
         # Full emulator parameter ordering
         # ---------------------------------------------------------
-        self.train_param_keys = self.emulator.train_param_keys
         self.fixed_param_keys = [
             key
             for key in self.train_param_keys
@@ -1242,7 +1314,7 @@ class emulator_mcmc:
             self.free_param_keys,
         )
 
-    
+
     def redshift_prior_funcs(
         self,
         prior_dicts,
@@ -1284,11 +1356,36 @@ class emulator_mcmc:
 
         return logprior_funcs_new#, initial_new
 
-
     def theta_to_x(self, theta):
         x = np.empty(self.ndim_train, dtype=float)
         x[self.index_fixed_in_train] = self.fixed_param_vals
         x[self.index_free_in_train] = theta
+        return x
+
+    def theta_batch_to_x(self, theta_batch):
+        """
+        Convert a batch of free MCMC parameters into the full emulator
+        parameter vectors.
+
+        Parameters
+        ----------
+        theta_batch : ndarray
+            Shape (n_eval, ndim_mcmc).
+
+        Returns
+        -------
+        x : ndarray
+            Shape (n_eval, ndim_train).
+        """
+
+        theta_batch = np.asarray(theta_batch, dtype=float)
+        if theta_batch.ndim != 2:
+            raise ValueError("theta_batch must have shape (n_eval, ndim_mcmc).")
+        n_eval = theta_batch.shape[0]
+        x = np.empty((n_eval, self.ndim_train), dtype=float)
+        if len(self.index_fixed_in_train) > 0:
+            x[:, self.index_fixed_in_train] = self.fixed_param_vals
+        x[:, self.index_free_in_train] = theta_batch
         return x
 
     def get_param_value(self, key, theta):
@@ -1319,8 +1416,6 @@ class emulator_mcmc:
 
         return logsfr_ratios
 
-
-
     def log_prior(self, theta, logprior_funcs=None):
         if logprior_funcs is None:
             logprior_funcs = self.logprior_funcs
@@ -1334,228 +1429,29 @@ class emulator_mcmc:
 
         return logp
 
-    def log_probability(self, theta, flux, flux_error=None, flux_lbs=None, filters=None, logprior_funcs=None):
-        lp = self.log_prior(theta, logprior_funcs=logprior_funcs)
 
-        if not np.isfinite(lp):
-            return -np.inf, 0.0
-        x = self.theta_to_x(theta)
-        prediction = self.emulator.predict_one(x)
+    def _prepare_likelihood(
+        self,
+        flux,
+        flux_err,
+        logprior_funcs,
+        vectorize,
+        **kwargs,
+    ):
+        """
+        Subclass hook.
 
-        zred = self.get_param_value("zred", theta)
-        lbs_model_shifted = prediction["lbs"] * (1.0+zred)
-        flux_model = prediction["flux"]
-        mfrac = prediction["mfrac_scaled"]
-        if filters is None:
-            if flux_lbs is None:
-                raise ValueError("lbs and filters cannot both be None!")
-            flux_model_conv = np.interp(flux_lbs, lbs_model_shifted, flux_model)
-        else:
-            # flux_model_conv = dlibs.convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
-            flux_model_conv = dlibs.fast_convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
+        Must return a dict containing at least:
 
-        if flux_error is None:
-            ll = -0.5 * np.sum((flux_model_conv-flux)**2)
-        else:
-            ll = -0.5 * np.sum((flux_model_conv-flux)**2 / flux_error**2 + np.log(2*np.pi*flux_error**2))
-        log_prob = lp + ll
+            log_prob_fn
+            args
+            vectorize
 
-        return log_prob, mfrac
+        Optionally:
+            blobs_dtype
+        """
+        raise NotImplementedError
 
-    def run_mcmc(
-            self, 
-            flux,
-            flux_err=None,
-            flux_lbs=None,
-            filters=None,
-            redshift=None, 
-            redshift_err=None,
-            initial=None,
-            nwalkers=None,
-            jitter=None,
-            nsteps=None,
-            zprior=None,
-            discard=None,
-            thin=None,
-            prior=None,
-            output_dir=None,
-            save_sampler=None,
-            sampler_filename=None,
-            verbose=None,
-            parallel=None,
-            n_processes=None,
-            results=True,
-            ):
-
-        # if flux_err is None:
-            # flux_err = np.ones_like(flux)
-        # initial_user = initial is not None
-        if filters is None:
-            filters = self.filters
-        else:
-            filters = self._resolve_filters(filters)
-
-        nwalkers = self.nwalkers if nwalkers is None else nwalkers
-        jitter = self.jitter if jitter is None else jitter
-        nsteps = self.nsteps if nsteps is None else nsteps
-        zprior = self.zprior if zprior is None else zprior
-        discard = self.discard if discard is None else discard
-        thin = self.thin if thin is None else thin
-
-        output_dir = self.output_dir if output_dir is None else output_dir
-        save_sampler = self.save_sampler if save_sampler is None else save_sampler
-        sampler_filename = self.sampler_filename if sampler_filename is None else sampler_filename
-        verbose = self.verbose if verbose is None else verbose
-        parallel = self.parallel if parallel is None else parallel
-        n_processes = self.n_processes if n_processes is None else n_processes
-
-        self.check_mcmc_ready()
-
-        # If setup has not happened, do it now.
-        # if self.prior_dicts is None or self.logprior_funcs is None:
-        self.setup_mcmc(prior=prior)
-        initial = self.initial.copy() if initial is None else np.asarray(initial).copy()
-
-        # TEMP
-        self.flux = flux
-        self.flux_err = flux_err
-
-        # self.ndim = len(self.emulator.train_param_keys)
-        logprior_funcs = self.logprior_funcs
-
-        if zprior and "zred" in self.mcmc_index:
-
-            if redshift is None and redshift_err is None:
-                logprior_funcs = self.logprior_funcs
-            elif redshift is not None and redshift_err is not None:
-                logprior_funcs = self.redshift_prior_funcs(
-                    self.prior_dicts,
-                    self.logprior_funcs,
-                    redshift,
-                    redshift_err,
-                )
-                # if not initial_user:
-                initial[self.zred_mcmc_index] = redshift
-            else:
-                raise ValueError("redshift and redshift_err must be provided together.")
-
-        # set up initial position with jitters
-        initial_pos = initial + jitter * np.random.randn(nwalkers, self.ndim_mcmc)
-
-        if save_sampler:
-            output_dir_path = Path(output_dir)
-            output_dir_path.mkdir(parents=True, exist_ok=True)
-            backend = emcee.backends.HDFBackend(sampler_filename)
-            backend.reset(nwalkers, self.ndim_mcmc)
-        else:
-            backend = None        
-
-        if parallel:
-            with multiprocessing.Pool(processes=n_processes) as pool:
-                self.sampler = emcee.EnsembleSampler(
-                    nwalkers=nwalkers,
-                    ndim=self.ndim_mcmc,
-                    log_prob_fn=self.log_probability,
-                    args=(flux, flux_err, flux_lbs, filters, logprior_funcs),
-                    backend=backend,
-                    pool=pool
-                )
-                self.sampler.run_mcmc(initial_pos, nsteps, progress=verbose)
-        else:
-                self.sampler = emcee.EnsembleSampler(
-                    nwalkers=nwalkers,
-                    ndim=self.ndim_mcmc,
-                    log_prob_fn=self.log_probability,
-                    args=(flux, flux_err, flux_lbs, filters, logprior_funcs),
-                    backend=backend,
-                )
-                self.sampler.run_mcmc(initial_pos, nsteps, progress=verbose)
-
-        self.full_samples = self.sampler.get_chain()
-        if results:
-            self.results = self.get_results(discard=discard, thin=thin)
-
-    def get_results(
-            self, 
-            discard=None,
-            thin=None):
-        discard = self.discard if discard is None else discard
-        thin = self.thin if thin is None else thin
-
-        nsteps = self.full_samples.shape[0]
-        if discard >= nsteps:
-            raise ValueError('discard cannot be equal or larger than nsteps!')
-
-        flat_samples = self.sampler.get_chain(discard=discard, thin=thin, flat=True)
-        flat_mfracs = self.sampler.get_blobs(discard=discard, thin=thin, flat=True)
-        theta_percentiles = get_theta_percentiles(flat_samples, percentiles=[16, 50, 84])
-        mfracs_percentiles = np.percentile(flat_mfracs, [16, 50, 84])
-        autocorr = self.sampler.get_autocorr_time(discard=discard, thin=thin, tol=0)
-
-        self.flat_samples = flat_samples
-
-        x_med = self.theta_to_x(theta_percentiles[1])
-        prediction_med = self.emulator.predict_one(x_med)
-
-        if "zred" in self.free_param_keys:
-            zred_med = theta_percentiles[1][self.mcmc_index["zred"]]
-            zred_16 = theta_percentiles[0][self.mcmc_index["zred"]]
-            zred_84 = theta_percentiles[2][self.mcmc_index["zred"]]
-        else:
-            zred_med = self.fixed_dicts["zred"]
-            zred_16 = self.fixed_dicts["zred"]
-            zred_84 = self.fixed_dicts["zred"]
-
-        if "logmass" in self.free_param_keys:
-            logmass_med = theta_percentiles[1][self.mcmc_index["logmass"]]
-        else:
-            logmass_med = self.fixed_dicts["logmass"]
-        logsfr_ratios_med = self.get_logsfr_ratios(theta_percentiles[1])
-
-        lbs_med = prediction_med["lbs"] * (1+zred_med)  # prediction lbs is rest frame
-        flux_med = prediction_med["flux"]
-        # flux_med_conv = dlibs.convolve_filter(lbs_med, flux_med, filters=self.filters)
-        flux_med_conv = dlibs.fast_convolve_filter(lbs_med, flux_med, filters=self.filters)
-        mfrac_med = mfracs_percentiles[1]
-
-        # save some med results for easy access
-        self.lbs_med = lbs_med
-        self.flux_med = flux_med
-        self.zred_med = zred_med
-        self.zred_16 = zred_16
-        self.zred_84 = zred_84
-        self.logmass_med = logmass_med
-        self.logsfr_ratios_med = logsfr_ratios_med
-
-        if self.sfh_type == 'continuity_sfh':
-            agebins_med, massbins_med, med_sfrs_med = spslibs.continuity_sfh_agebins_sfrs(
-                zred_med,
-                logsfr_ratios_med,
-                logmass_med,
-            )
-
-            results = {
-                'flat_samples': flat_samples,
-                'flat_mfracs': flat_mfracs,
-                'theta_percentiles': theta_percentiles,
-                'lbs_rest': prediction_med["lbs"],
-                'lbs_med': lbs_med,
-                'flux_med': flux_med,
-                'flux_med_conv': flux_med_conv,
-                'mfrac_med': mfrac_med,
-                'mfracs_percentiles': mfracs_percentiles,
-                'agebins_med': agebins_med,
-                'massbins_med': massbins_med,
-                'sfrs_med': med_sfrs_med,
-                'free_param_keys': self.free_param_keys,
-                'fixed_param_keys': self.fixed_param_keys,
-                'fixed_param_vals': self.fixed_param_vals,
-                'autocorr': autocorr
-            }
-
-        # TODO parametric_sfh
-
-        return results
 
     def get_continuity_sfh_all_agelims_sfrs(self, flat_samples=None):
         if flat_samples is None:
@@ -1589,8 +1485,6 @@ class emulator_mcmc:
         print("\ncurrent prior:")
         pprint(self.prior_dicts, sort_dicts=False)
 
-
-    # TODO saving file function
     def save_results(self, 
                      results=None, 
                      output_filename=None,
@@ -1624,4 +1518,889 @@ class emulator_mcmc:
                             }
                         )
 
-    
+    def run_mcmc(
+            self, 
+            flux,
+            flux_err=None,
+            redshift=None, 
+            redshift_err=None,
+            initial=None,
+            nwalkers=None,
+            jitter=None,
+            nsteps=None,
+            zprior=None,
+            discard=None,
+            thin=None,
+            prior=None,
+            output_dir=None,
+            save_sampler=None,
+            sampler_filename=None,
+            verbose=None,
+            parallel=None,
+            vectorize=None,
+            n_processes=None,
+            results=True,
+            **kwargs,
+            ):
+
+        # if flux_err is None:
+            # flux_err = np.ones_like(flux)
+        # initial_user = initial is not None
+
+        nwalkers = self.nwalkers if nwalkers is None else nwalkers
+        jitter = self.jitter if jitter is None else jitter
+        nsteps = self.nsteps if nsteps is None else nsteps
+        zprior = self.zprior if zprior is None else zprior
+        discard = self.discard if discard is None else discard
+        thin = self.thin if thin is None else thin
+
+        output_dir = self.output_dir if output_dir is None else output_dir
+        save_sampler = self.save_sampler if save_sampler is None else save_sampler
+        sampler_filename = self.sampler_filename if sampler_filename is None else sampler_filename
+        verbose = self.verbose if verbose is None else verbose
+        parallel = self.parallel if parallel is None else parallel
+        vectorize = self.vectorize if vectorize is None else vectorize
+        n_processes = self.n_processes if n_processes is None else n_processes
+
+        self.check_mcmc_ready()
+        self.setup_mcmc(prior=prior)
+
+        initial = self.initial.copy() if initial is None else np.asarray(initial).copy()
+        self.flux = flux
+        self.flux_err = flux_err
+        logprior_funcs = self.logprior_funcs
+
+
+        if zprior and "zred" in self.mcmc_index:
+
+            if redshift is None and redshift_err is None:
+                logprior_funcs = self.logprior_funcs
+            elif redshift is not None and redshift_err is not None:
+                logprior_funcs = self.redshift_prior_funcs(
+                    self.prior_dicts,
+                    self.logprior_funcs,
+                    redshift,
+                    redshift_err,
+                )
+                # if not initial_user:
+                initial[self.zred_mcmc_index] = redshift
+            else:
+                raise ValueError("redshift and redshift_err must be provided together.")
+
+        likelihood_spec = self._prepare_likelihood(
+            flux=flux,
+            flux_err=flux_err,
+            logprior_funcs=logprior_funcs,
+            vectorize=vectorize,
+            **kwargs,
+        )
+
+        # set up initial position with jitters
+        initial_pos = initial + jitter * np.random.randn(nwalkers, self.ndim_mcmc)
+
+        if save_sampler:
+            output_dir_path = Path(output_dir)
+            output_dir_path.mkdir(parents=True, exist_ok=True)
+            backend = emcee.backends.HDFBackend(sampler_filename)
+            backend.reset(nwalkers, self.ndim_mcmc)
+        else:
+            backend = None       
+
+        sampler_kwargs = {
+            "nwalkers": nwalkers,
+            "ndim": self.ndim_mcmc,
+            "log_prob_fn": likelihood_spec["log_prob_fn"],
+            "args": likelihood_spec["args"],
+            "backend": backend,
+            "vectorize": vectorize
+        }
+
+        # if likelihood_spec.get("vectorize", False):
+            # sampler_kwargs["vectorize"] = True
+
+        if "blobs_dtype" in likelihood_spec:
+            sampler_kwargs["blobs_dtype"] = likelihood_spec["blobs_dtype"]
+
+        # --------------------------------------------------
+        # Run MCMC
+        # --------------------------------------------------
+
+        if parallel:
+            if vectorize:
+                raise ValueError("parallel=True and vectorize=True are not supported together.")
+
+            with multiprocessing.Pool(processes=n_processes) as pool:
+                self.sampler = emcee.EnsembleSampler(**sampler_kwargs, pool=pool)
+                self.sampler.run_mcmc(initial_pos, nsteps, progress=verbose)
+
+        else:
+            self.sampler = emcee.EnsembleSampler(**sampler_kwargs,)
+            self.sampler.run_mcmc(initial_pos, nsteps, progress=verbose)
+
+        self.full_samples = self.sampler.get_chain()
+        if results:
+            self.results = self.get_results(discard=discard, thin=thin)
+
+    def get_results(
+            self, 
+            discard=None,
+            thin=None):
+        discard = self.discard if discard is None else discard
+        thin = self.thin if thin is None else thin
+
+        nsteps = self.full_samples.shape[0]
+        if discard >= nsteps:
+            raise ValueError('discard cannot be equal or larger than nsteps!')
+
+        flat_samples = self.sampler.get_chain(discard=discard, thin=thin, flat=True)
+        flat_mfracs = self.sampler.get_blobs(discard=discard, thin=thin, flat=True)
+        theta_percentiles = get_theta_percentiles(flat_samples, percentiles=[16, 50, 84])
+        mfracs_percentiles = np.percentile(flat_mfracs, [16, 50, 84])
+        autocorr = self.sampler.get_autocorr_time(discard=discard, thin=thin, tol=0)
+
+        self.flat_samples = flat_samples
+        x_med = self.theta_to_x(theta_percentiles[1])
+        prediction_med = self.emulator.predict_one(x_med)
+
+        if "zred" in self.free_param_keys:
+            zred_med = theta_percentiles[1][self.mcmc_index["zred"]]
+            zred_16 = theta_percentiles[0][self.mcmc_index["zred"]]
+            zred_84 = theta_percentiles[2][self.mcmc_index["zred"]]
+        else:
+            zred_med = self.fixed_dicts["zred"]
+            zred_16 = self.fixed_dicts["zred"]
+            zred_84 = self.fixed_dicts["zred"]
+
+        if "logmass" in self.free_param_keys:
+            logmass_med = theta_percentiles[1][self.mcmc_index["logmass"]]
+        else:
+            logmass_med = self.fixed_dicts["logmass"]
+        logsfr_ratios_med = self.get_logsfr_ratios(theta_percentiles[1])
+
+        mfrac_med = mfracs_percentiles[1]
+
+        # --------------------------------------------------
+        # Subclass-specific prediction processing
+        # --------------------------------------------------
+
+        prediction_results = self._process_median_prediction(prediction_med=prediction_med, zred_med=zred_med)
+
+        self.zred_med = zred_med
+        self.zred_16 = zred_16
+        self.zred_84 = zred_84
+        self.logmass_med = logmass_med
+        self.logsfr_ratios_med = logsfr_ratios_med
+
+        results = {
+            "flat_samples": flat_samples,
+            "flat_mfracs": flat_mfracs,
+            "theta_percentiles": theta_percentiles,
+            "mfrac_med": mfrac_med,
+            "mfracs_percentiles": mfracs_percentiles,
+            "free_param_keys": self.free_param_keys,
+            "fixed_param_keys": self.fixed_param_keys,
+            "fixed_param_vals": self.fixed_param_vals,
+            "autocorr": autocorr,
+        }
+        # add subclass-specific prediction fields
+        results.update(prediction_results)
+
+        if self.sfh_type == "continuity_sfh":
+            agebins_med, massbins_med, sfrs_med = spslibs.continuity_sfh_agebins_sfrs(zred_med, logsfr_ratios_med, logmass_med)
+
+            results.update({
+                "agebins_med": agebins_med,
+                "massbins_med": massbins_med,
+                "sfrs_med": sfrs_med,
+            })
+
+        # TODO parametric SFH
+
+        return results
+
+
+
+
+
+class PCAEmulatorMCMC(BaseEmulatorMCMC):
+    """
+
+    """
+    def __init__(
+            self,
+            config_filename=None,
+            emulator=None,
+            nwalkers=None,
+            jitter=None,
+            nsteps=None,
+            discard=None,
+            thin=None,
+            zprior=None,
+            filters=None,
+            parallel=None,
+            vectorize=None,
+            n_processes=None,
+            verbose=None,
+            output_dir=None,
+            save_sampler=None,
+            sampler_filename=None,
+            output_filename=None,
+            save_plots=None,
+            plots_dir=None,
+        ):
+        self.filters = None
+
+        super().__init__(
+            config_filename=config_filename,
+            emulator=emulator,
+            nwalkers=nwalkers,
+            jitter=jitter,
+            nsteps=nsteps,
+            discard=discard,
+            thin=thin,
+            zprior=zprior,
+            parallel=parallel,
+            vectorize=vectorize,
+            n_processes=n_processes,
+            verbose=verbose,
+            output_dir=output_dir,
+            save_sampler=save_sampler,
+            sampler_filename=sampler_filename,
+            output_filename=output_filename,
+            save_plots=save_plots,
+            plots_dir=plots_dir,
+        )
+        apply_config_overrides(self.config, {"Files.filters": filters})
+        self.filters = self._resolve_filters(self.config["Files"]["filters"])        
+
+    def _setup_vectorized_static_state(self):
+        model_dtype = next(self.emulator.model.parameters()).dtype
+
+        self.lbs_model_t = torch.as_tensor(
+            self.emulator.lbs,
+            dtype=model_dtype,
+            device=self.device,
+        )
+
+    def _process_median_prediction(
+        self,
+        prediction_med,
+        zred_med,
+    ):
+        lbs_rest = self.emulator.lbs
+        lbs_med = lbs_rest * (1.0 + zred_med)
+        flux_med = prediction_med["flux"]
+
+        flux_med_conv = dlibs.fast_convolve_filter(lbs_med, flux_med, filters=self.run_filters)
+
+        self.lbs_med = lbs_med
+        self.flux_med = flux_med
+
+        return {
+            "lbs_rest": lbs_rest,
+            "lbs_med": lbs_med,
+            "flux_med": flux_med,
+            "flux_med_conv": flux_med_conv,
+        }
+
+    def _resolve_emulator(self, emulator=None):
+        # Explicitly supplied
+        if emulator is not None:
+            if isinstance(emulator, elibs.LoadedSPSEmulator):
+                return emulator
+
+            # Otherwise assume it is a filename/path
+            return elibs.LoadedSPSEmulator(emulator)
+
+        # Try config
+        emulator_path = self.config.get("emulator")
+
+        if emulator_path is not None:
+            return elibs.LoadedSPSEmulator(emulator_path)
+
+        # Allow incomplete construction
+        return None
+
+    @staticmethod
+    def _resolve_filters(filters):
+        if filters is False:
+            return None
+
+        if isinstance(filters, (str, Path)):
+            return dlibs.read_filters(filters, return_unique_inverse=True)
+
+        return filters
+
+    def log_probability(self, theta, flux, flux_error=None, flux_lbs=None, filters=None, logprior_funcs=None):
+        lp = self.log_prior(theta, logprior_funcs=logprior_funcs)
+
+        if not np.isfinite(lp):
+            return -np.inf, 0.0
+        x = self.theta_to_x(theta)
+        prediction = self.emulator.predict_one(x)
+
+        zred = self.get_param_value("zred", theta)
+        lbs_model_shifted = self.emulator.lbs * (1.0+zred)
+        flux_model = prediction["flux"]
+        mfrac = prediction["mfrac"]
+        if filters is None:
+            if flux_lbs is None:
+                raise ValueError("lbs and filters cannot both be None!")
+            flux_model_conv = np.interp(flux_lbs, lbs_model_shifted, flux_model)
+        else:
+            # flux_model_conv = dlibs.convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
+            flux_model_conv = dlibs.fast_convolve_filter(wl=lbs_model_shifted, flux=flux_model, filters=filters)
+
+        if flux_error is None:
+            ll = -0.5 * np.sum((flux_model_conv-flux)**2)
+        else:
+            ll = -0.5 * np.sum((flux_model_conv-flux)**2 / flux_error**2 + np.log(2*np.pi*flux_error**2))
+        log_prob = lp + ll
+
+        return log_prob, mfrac
+
+
+    def log_probability_vectorized(
+        self,
+        theta_batch,
+        flux_t,
+        flux_inv_var_t,
+        flux_log_norm_t,
+        flux_lbs_t,
+        interp_setup,
+        logprior_funcs=None,
+    ):
+
+        theta_batch = np.asarray(theta_batch, dtype=float)
+        if theta_batch.ndim != 2:
+            raise ValueError("theta_batch must have shape (n_eval, ndim_mcmc).")
+
+        n_eval = theta_batch.shape[0]
+
+        if theta_batch.shape[1] != self.ndim_mcmc:
+            raise ValueError("theta_batch has incorrect parameter dimension.")
+
+        # =============================================================
+        # 1. Priors on CPU
+        # =============================================================
+
+        log_prior = np.empty(n_eval, dtype=float)
+
+        for i in range(n_eval):
+            log_prior[i] = self.log_prior(theta_batch[i], logprior_funcs=logprior_funcs)
+        valid = np.isfinite(log_prior)
+
+        log_prob = np.full(n_eval, -np.inf, dtype=float)
+        mfrac = np.zeros(n_eval, dtype=float)
+
+        if not np.any(valid):
+            return [(float(log_prob[i]), float(mfrac[i])) for i in range(n_eval)]
+
+        # =============================================================
+        # 2. Build full emulator input
+        # =============================================================
+
+        theta_valid = theta_batch[valid]
+        x_valid = self.theta_batch_to_x(theta_valid)
+
+        # =============================================================
+        # 3. Batched emulator evaluation
+        # =============================================================
+
+        prediction = self.emulator.predict_torch(x_valid)
+
+        # rest-frame high-resolution spectra
+        flux_model = prediction["flux"]
+
+        # Expected shape:
+        # flux_model = (n_valid, n_model_lbs)
+
+        if "mfrac" in prediction:
+            mfrac_model = prediction["mfrac"]
+        else:
+            mfrac_model = torch.zeros(len(theta_valid), dtype=flux_model.dtype, device=self.device)
+
+        # =============================================================
+        # 4. Get redshift for every valid walker
+        # =============================================================
+
+        if interp_setup is not None:
+            # fixed-redshift case
+            flux_model_interp = torch_interp1d_apply(
+                flux_model,
+                *interp_setup,
+            )
+
+        else:
+            # free-redshift case
+            zred_t = torch.as_tensor(
+                x_valid[:, self.zred_train_index],
+                dtype=flux_model.dtype,
+                device=self.device,
+            )
+
+            flux_lbs_rest_t = (flux_lbs_t.unsqueeze(0) / (1.0 + zred_t.unsqueeze(1)))
+            flux_model_interp = torch_batch_interp1d(
+                self.lbs_model_t,
+                flux_model,
+                flux_lbs_rest_t,
+            )
+
+        residual = (flux_model_interp - flux_t.unsqueeze(0))
+
+        if flux_inv_var_t is None:
+            # unweighted least squares
+            log_likelihood = -0.5 * torch.sum(residual.square(), dim=1)
+
+        else:
+
+            log_likelihood = -0.5 * torch.sum(
+                residual.square()
+                * flux_inv_var_t.unsqueeze(0)
+                + flux_log_norm_t.unsqueeze(0),
+                dim=1,
+            )
+
+        # =============================================================
+        # 9. Bring back scalars
+        # =============================================================
+
+        log_likelihood = log_likelihood.detach().cpu().numpy()
+        mfrac_model = mfrac_model.detach().cpu().numpy()
+
+        # =============================================================
+        # 10. Posterior
+        # =============================================================
+
+        log_prob[valid] = (log_prior[valid] + log_likelihood)
+        mfrac[valid] = mfrac_model
+
+        return [(float(log_prob[i]), float(mfrac[i])) for i in range(n_eval)]
+
+    def _prepare_likelihood(
+        self,
+        flux,
+        flux_err,
+        vectorize,
+        logprior_funcs,
+        flux_lbs=None,
+        filters=None,
+        # vectorize=None,
+        # **kwargs,
+    ):
+        if flux_lbs is not None and len(flux_lbs) != len(flux):
+            raise ValueError("flux and flux_lbs must have the same length.")
+        if flux_err is not None and len(flux_err) != len(flux):
+            raise ValueError("flux and flux_err must have the same length.")
+        if flux_err is not None and np.any(np.asarray(flux_err) <= 0):
+            raise ValueError("flux_err must contain only positive values.")
+
+        if filters is None:
+            filters = self.filters
+        else:
+            filters = self._resolve_filters(filters)
+        self.run_filters = filters
+
+        # TEMP
+        if vectorize and filters is not None:
+            raise NotImplementedError(
+                "Vectorized filter convolution is not implemented yet. "
+                "Use vectorize=False."
+            )
+
+        if not vectorize:
+
+            return {
+                "log_prob_fn": self.log_probability,
+                "args": (
+                    flux,
+                    flux_err,
+                    flux_lbs,
+                    filters,
+                    logprior_funcs,
+                ),
+                # "vectorize": False,
+            }
+        
+        # ------------------------------------------
+        # Vectorized likelihood
+        # ------------------------------------------
+
+        self._setup_vectorized_device()
+
+        model_dtype = next(self.emulator.model.parameters()).dtype
+
+        flux_t = torch.as_tensor(
+            flux,
+            dtype=model_dtype,
+            device=self.device,
+        )
+
+        if flux_err is None:
+            flux_inv_var_t = None
+            flux_log_norm_t = None
+        else:
+            flux_err_t = torch.as_tensor(
+                flux_err,
+                dtype=model_dtype,
+                device=self.device,
+            )
+
+            flux_inv_var_t = 1.0 / flux_err_t.square()
+            flux_log_norm_t = torch.log(2.0 * torch.pi * flux_err_t.square())
+
+        if flux_lbs is not None:
+            flux_lbs_t = torch.as_tensor(
+                flux_lbs,
+                dtype=model_dtype,
+                device=self.device,
+            )
+        else:
+            raise ValueError("flux_lbs is required for vectorized PCA likelihood when filters are not used.")
+
+        if self.zred_mcmc_index is None:
+            # zred is fixed
+            zred = self.fixed_dicts["zred"]
+            flux_lbs_rest_t = (flux_lbs_t / (1.0 + zred))
+            interp_setup = torch_interp1d_setup(self.lbs_model_t, flux_lbs_rest_t)
+        else:
+            # zred changes between walkers
+            interp_setup = None
+
+        return {
+            "log_prob_fn": self.log_probability_vectorized,
+            "args": (
+                flux_t,
+                flux_inv_var_t,
+                flux_log_norm_t,
+                flux_lbs_t,
+                interp_setup,
+                logprior_funcs,
+            ),
+            "blobs_dtype": float,
+        }
+
+    def run_mcmc(
+        self,
+        flux,
+        flux_err=None,
+        flux_lbs=None,
+        filters=None,
+        **kwargs,
+    ):
+        """
+
+        """
+        return super().run_mcmc(
+            flux=flux,
+            flux_err=flux_err,
+            flux_lbs=flux_lbs,
+            filters=filters,
+            **kwargs,
+        )
+
+
+class FluxEmulatorMCMC(BaseEmulatorMCMC):
+    """
+
+    """
+    def __init__(
+            self,
+            config_filename=None,
+            emulator=None,
+            nwalkers=None,
+            jitter=None,
+            nsteps=None,
+            discard=None,
+            thin=None,
+            zprior=None,
+            parallel=None,
+            vectorize=None,
+            n_processes=None,
+            verbose=None,
+            output_dir=None,
+            save_sampler=None,
+            sampler_filename=None,
+            output_filename=None,
+            save_plots=None,
+            plots_dir=None,
+            ): 
+
+        super().__init__(
+            config_filename=config_filename,
+            emulator=emulator,
+            nwalkers=nwalkers,
+            jitter=jitter,
+            nsteps=nsteps,
+            discard=discard,
+            thin=thin,
+            zprior=zprior,
+            parallel=parallel,
+            vectorize=vectorize,
+            n_processes=n_processes,
+            verbose=verbose,
+            output_dir=output_dir,
+            save_sampler=save_sampler,
+            sampler_filename=sampler_filename,
+            output_filename=output_filename,
+            save_plots=save_plots,
+            plots_dir=plots_dir,
+        )
+
+
+        # apply_config_overrides(self.config, {"MCMC.vectorize": vectorize})
+        # self.vectorize = self.config["MCMC"]["vectorize"]
+
+    def _resolve_emulator(self, emulator=None):
+        # Explicitly supplied
+        if emulator is not None:
+            if isinstance(emulator, flibs.LoadedFluxSPSEmulator):
+                return emulator
+
+            # Otherwise assume it is a filename/path
+            return flibs.LoadedFluxSPSEmulator(emulator)
+
+        # Try config
+        emulator_path = self.config.get("emulator")
+
+        if emulator_path is not None:
+            return flibs.LoadedFluxSPSEmulator(emulator_path)
+
+        # Allow incomplete construction
+        return None
+
+    def _setup_emulator_specific_state(self):
+        self.lamb_obs = self.emulator.lamb_obs
+
+    def _modify_default_config(self):
+        self.config["Outputs"]["sampler_filename"] = "flux_emulator_mcmc_sampler.h5"
+        self.config["Outputs"]["output_filename"] = "flux_emulator_mcmc_results.h5"
+        self.config["MCMC"]["vectorize"] = True
+
+    def _process_median_prediction(
+        self,
+        prediction_med,
+        zred_med=None,
+    ):
+        self.flux_med = prediction_med["flux"]
+        return {
+            "flux_fiducial_med": prediction_med["flux"],
+            "lamb_obs": self.lamb_obs,
+        }
+
+    def log_probability(self, theta, flux, flux_error, logprior_funcs=None):
+        lp = self.log_prior(theta, logprior_funcs=logprior_funcs)
+
+        if not np.isfinite(lp):
+            return -np.inf, 0.0
+        x = self.theta_to_x(theta)
+        prediction = self.emulator.predict_one(x)
+        flux_model = prediction["flux"]
+        mfrac = prediction["mfrac"]
+        ll = -0.5 * np.sum((flux_model-flux)**2 / flux_error**2 + np.log(2*np.pi*flux_error**2))
+        log_prob = lp + ll
+
+        return log_prob, mfrac
+
+
+    def log_probability_vectorized(self, theta_batch, flux_t, flux_inv_var_t, flux_log_norm_t, logprior_funcs=None):
+        """
+        Vectorized log posterior for emcee.
+
+        emcee supplies a batch of MCMC parameter vectors. Priors are
+        evaluated on CPU, while valid positions are passed through the
+        emulator in one batched call.
+
+        The emulator is responsible for:
+            - input scaling
+            - neural-network inference
+            - inverse flux scaling
+            - inverse mfrac scaling
+
+        Therefore prediction["flux"] is always physical linear flux.
+        """
+
+        theta_batch = np.asarray(theta_batch, dtype=float)
+
+        if theta_batch.ndim != 2:
+            raise ValueError("theta_batch must have shape (n_eval, ndim_mcmc).")
+
+        n_eval = theta_batch.shape[0]
+        if (theta_batch.shape[1] != self.ndim_mcmc):
+            raise ValueError("theta_batch has incorrect parameter dimension.")
+
+        # if logprior_funcs is None:logprior_funcs = self.logprior_funcs
+
+        # =============================================================
+        # 1. Priors
+        # =============================================================
+        #
+        # Keep these on CPU. Your existing prior functions are scalar
+        # scipy/Python callables and are cheap compared with model
+        # inference.
+
+        log_prior = np.empty(n_eval, dtype=float)
+
+        for i in range(n_eval):
+            log_prior[i] = self.log_prior(theta_batch[i], logprior_funcs=logprior_funcs)
+        valid = np.isfinite(log_prior)
+
+        # -------------------------------------------------------------
+        # Allocate complete results.
+        # -------------------------------------------------------------
+
+        log_prob = np.full(n_eval, -np.inf, dtype=float,)
+        mfrac = np.zeros(n_eval, dtype=float,)
+
+        # If every proposal violates its prior, avoid the emulator
+        # entirely.
+        if not np.any(valid):
+            return [(float(log_prob[i]), float(mfrac[i])) for i in range(n_eval)]
+
+        # =============================================================
+        # 2. Build full emulator input
+        # =============================================================
+
+        theta_valid = (theta_batch[valid])
+        x_valid = (self.theta_batch_to_x(theta_valid))
+
+        # =============================================================
+        # 3. ONE batched emulator evaluation
+        # =============================================================
+        #
+        # predict_torch() accepts RAW emulator parameters and returns
+        # PHYSICAL quantities.
+        #
+        # It also leaves the result on self.emulator.device.
+
+        prediction = self.emulator.predict_torch(x_valid)
+        flux_model = prediction["flux"]
+
+        # flux_model:
+        #     (n_valid, n_flux)
+        #
+        # and is PHYSICAL LINEAR flux.
+
+        if "mfrac" in prediction:
+            mfrac_model = prediction["mfrac"]
+        else:
+            mfrac_model = torch.zeros(len(theta_valid), dtype=flux_model.dtype, device=self.device)
+
+        # =============================================================
+        # 4. Gaussian likelihood on device
+        # =============================================================
+
+        # residual = (flux_model - self._flux_obs_t.unsqueeze(0))
+        # log_likelihood = -0.5 * torch.sum(residual.square() * self._flux_inv_var_t.unsqueeze(0) + self._flux_log_norm_t.unsqueeze(0), dim=1)
+        residual = (flux_model - flux_t.unsqueeze(0))
+        log_likelihood = -0.5 * torch.sum(residual.square() * flux_inv_var_t.unsqueeze(0) + flux_log_norm_t.unsqueeze(0), dim=1)
+        # log_likelihood = -0.5 * torch.sum(residual.square() * flux_inv_var_t.unsqueeze(0), dim=1)
+
+        # =============================================================
+        # 5. Bring back only scalar results
+        # =============================================================
+
+        log_likelihood = (log_likelihood.cpu().numpy())
+        mfrac_model = (mfrac_model.cpu().numpy())
+
+        # =============================================================
+        # 6. Posterior = prior + likelihood
+        # =============================================================
+
+        log_prob[valid] = (log_prior[valid] + log_likelihood)
+        mfrac[valid] = mfrac_model
+
+        # =============================================================
+        # 7. emcee results
+        # =============================================================
+
+        return [(float(log_prob[i]), float(mfrac[i])) for i in range(n_eval)]
+
+    # def _setup_vectorized_device(self):
+    #     """
+    #     Put the emulator on the automatically selected device for
+    #     vectorized MCMC evaluation.
+    #     """
+    #     self.emulator.to("auto")
+    #     self.device = self.emulator.device
+
+    def run_mcmc(
+        self,
+        flux,
+        flux_err=None,
+        # vectorize=None,
+        **kwargs,
+    ):
+        # self.lamb_obs = self.emulator.lamb_obs
+        return super().run_mcmc(
+            flux=flux,
+            flux_err=flux_err,
+            # vectorize=vectorize,
+            **kwargs,
+        )
+
+    def _prepare_likelihood(
+        self,
+        flux,
+        flux_err,
+        logprior_funcs,
+        vectorize,
+        # **kwargs,
+    ):
+        
+        # ------------------------------------------
+        # Normal scalar likelihood
+        # ------------------------------------------
+
+        if not vectorize:
+
+            return {
+                "log_prob_fn": self.log_probability,
+                "args": (
+                    flux,
+                    flux_err,
+                    logprior_funcs,
+                ),
+                # "vectorize": False,
+            }
+
+        # ------------------------------------------
+        # Vectorized likelihood
+        # ------------------------------------------
+
+        self._setup_vectorized_device()
+
+        if len(flux) != len(self.lamb_obs):
+            raise ValueError("Observed flux length does not match the emulator output grid.")
+        if flux_err is None:
+            raise ValueError("flux_err is required for vectorized likelihood evaluation.")
+
+        model_dtype = next(self.emulator.model.parameters()).dtype
+
+        flux_t = torch.as_tensor(
+            flux,
+            dtype=model_dtype,
+            device=self.device,
+        )
+
+        flux_err_t = torch.as_tensor(
+            flux_err,
+            dtype=model_dtype,
+            device=self.device,
+        )
+
+        flux_inv_var_t = 1.0 / flux_err_t.square()
+        flux_log_norm_t = torch.log(2.0 * torch.pi * flux_err_t.square())
+
+        return {
+            "log_prob_fn": self.log_probability_vectorized,
+            "args": (
+                flux_t,
+                flux_inv_var_t,
+                flux_log_norm_t,
+                logprior_funcs,
+            ),
+            # "vectorize": True,
+            "blobs_dtype": float,
+        }
+

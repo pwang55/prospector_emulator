@@ -452,6 +452,7 @@ def rel_flux_err_plot(
     save=False,
     filename="rel_flux_err_plot.png",
     figsize=(10, 5),
+    ylims=(-0.2, 0.2),
     output_dirname="",
     dpi=300,
     fill_between_95_kwargs=None,
@@ -507,6 +508,7 @@ def rel_flux_err_plot(
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_yscale(yscale)
+    ax.set_ylim(ylims)
     fig.tight_layout()
     if save:
         plt.savefig(output_dir / filename, dpi=dpi)
@@ -551,20 +553,21 @@ def mfrac_plots(
 
 def each_param_plots(
         x_test,
-        flux_pred,
-        flux_true,
-        flux_scale='log10',
+        rel_l2_err,
+        med_ratio,
         feature_names=None,
-        figsize=(15, 12),
+        figsize=(14, 12),
+        nrowcol=None,
         gridsize=100,
         ymin1=-0.02,
         ymax1=0.5,
-        ymin2=0.5,
-        ymax2=1.5,
-        yscale='linear',
+        ymin2 = 0.5,
+        ymax2 = 1.5,
         bins="log",
         save=False,
         filename="param_plots.png",
+        # filename1="param_plots_rel_l2_err.png",
+        # filename2="param_plots_med_ratio.png",
         output_dirname="",
         dpi=300,
         **kwargs,
@@ -576,44 +579,39 @@ def each_param_plots(
     if feature_names is None:
         feature_names = [f"param{i}" for i in range(n_features)]
 
-    # TODO automatically decide dimension based on input number of templates
-    # fig1, ax1 = plt.subplots(2, 5, figsize=figsize)
+    if nrowcol is None:
+        # nrows = int(np.ceil(np.sqrt(n_features))) # calculate the nrow as if the plot is square, take the smallest number that accommodate it
+        # ncols = int(np.ceil(n_features / nrows))  # use the above nrows, calculate the resulting ncols and round up
+        # TEMP
+        nrows = 4
+        ncols = (n_features // 2) + ((n_features % 2)>0)
+    else:
+        nrows = nrowcol[0]
+        ncols = nrowcol[1]
+        # if nrows * ncols < n_features:
+            # raise ValueError(f'Figure with ({nrows},{ncols}) subplots are not enough for {n_features} parameters')
 
-    if flux_scale == 'log10':
-        flux_true = np.log10(flux_true)
-        flux_pred = np.log10(flux_pred)
-        y1_label = 'relative log10_flux L2 error'
-        y2_label = 'median log10_flux ratio'
-    elif flux_scale == 'linear':
-        y1_label = 'relative flux L2 error'
-        y2_label = 'median flux ratio'
-
-    rel_l2_errs = np.linalg.norm(flux_pred-flux_true, axis=1)/np.linalg.norm(flux_true, axis=1)
-    median_ratios = np.median(flux_pred/flux_true, axis=1)
-
-    fig, ax = plt.subplots(4, 5, figsize=figsize)
-    for i in range(x_test.shape[1]):
-        rowi = i // 5
-        coli = i % 5
+    fig, ax = plt.subplots(nrows, ncols, figsize=figsize)
+    for i in range(int(nrows*ncols/2)):
+        rowi = i // ncols
+        coli = i % ncols
         axi1 = ax[rowi, coli]
-        xmin = np.min(x_test[:,i])
-        xmax = np.max(x_test[:,i])
-        hb1 = axi1.hexbin(x_test[:,i], rel_l2_errs, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)        
-        fig.colorbar(hb1, ax=axi1)
-        axi1.set_xlabel(feature_names[i])
-        axi1.grid()
-        axi1.set_yscale(yscale)
-        if coli == 0:
-            axi1.set_ylabel(y1_label)
-
         axi2 = ax[rowi+2, coli]
-        hb2 = axi2.hexbin(x_test[:,i], median_ratios, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
-        fig.colorbar(hb2, ax=axi2)
-        axi2.set_xlabel(feature_names[i])
-        axi2.grid()
-        axi2.set_yscale(yscale)
-        if coli == 0:
-            axi2.set_ylabel(y2_label)
+        if i < n_features:
+            xmin = np.min(x_test[:,i])
+            xmax = np.max(x_test[:,i])
+            hb1 = axi1.hexbin(x_test[:,i], rel_l2_err, gridsize=gridsize, extent=[xmin, xmax, ymin1, ymax1], bins=bins, **kwargs)        
+            fig.colorbar(hb1, ax=axi1)
+            axi1.set_xlabel(feature_names[i])
+            axi1.grid()
+            axi2 = ax[rowi+2, coli]
+            hb2 = axi2.hexbin(x_test[:,i], med_ratio, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
+            fig.colorbar(hb2, ax=axi2)
+            axi2.set_xlabel(feature_names[i])
+            axi2.grid()
+        else:
+            axi1.set_visible(False)
+            axi2.set_visible(False)
 
     fig.tight_layout()
     if save:
@@ -636,13 +634,13 @@ def main():
     # read config, then override with args if given CLI inputs
     config = load_config(args.config, args=args)
 
-    device = felibs.get_device(config['Device'])
+    device = felibs.efuncs.get_device(config['Device'])
     print(f"Using device: {device}")
 
     verbose = config["Training"]["verbose"]
 
     # load data
-    train_data = felibs.load_data(config["Data"]["train_data"])
+    train_data = felibs.efuncs.load_data(config["Data"]["train_data"])
     x_train = train_data["x"]
     flux_train = train_data["flux_fiducial"]
     mfrac_train = train_data["mfrac"]
@@ -653,7 +651,7 @@ def main():
     prior_dicts = train_data["prior_dicts"]
 
     if config["Data"]["valid_data"] is not None:
-        valid_data = felibs.load_data(config["Data"]["valid_data"])
+        valid_data = felibs.efuncs.load_data(config["Data"]["valid_data"])
         x_valid = valid_data["x"]
         flux_valid = valid_data["flux_fiducial"]
         mfrac_valid = valid_data["mfrac"]
@@ -671,7 +669,7 @@ def main():
         flux_train = flux_train[idx_train]
         mfrac_train = mfrac_train[idx_train]
 
-    test_data = felibs.load_data(config["Data"]["test_data"])
+    test_data = felibs.efuncs.load_data(config["Data"]["test_data"])
     x_test = test_data["x"]
     flux_test = test_data["flux_fiducial"]
     mfrac_test = test_data["mfrac"]
@@ -843,7 +841,7 @@ def main():
     ).to(device)
 
     # create optimizer from optimizer class, AFTER creating model
-    optimizer = felibs.make_optimizer(
+    optimizer = felibs.efuncs.make_optimizer(
         name=config["Optimizer"]["name"],
         parameters=model.parameters(),
         learning_rate=config["Optimizer"]["learning_rate"],

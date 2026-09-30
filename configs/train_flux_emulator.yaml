@@ -25,7 +25,7 @@ DataLoader:
   test_shuffle: True
 
 Emulator:
-  shared_dims: [1024, 1024, 1024, 1024]
+  shared_dims: [512, 512, 512, 512, 512, 512, 512]
   flux_head_dims: 
   mfrac_head_dims: 
   activation: gelu                      # gelu, relu, silu, elu, tanh, leaky_relu
@@ -47,15 +47,15 @@ Optimizer:
 
 Training:
   # device: auto
-  max_epochs: 800
-  patience: 50
+  max_epochs: 1000
+  patience: 100
   abs_tol: 0.0
   rel_tol: 0.001
   monitor: total                        # total, coef, mfrac
   verbose: True
 
 Outputs:
-  outputs_dir: flux_emulator_outputs
+  outputs_dir: emulator_outputs/flux_emulators
   save_plots: True
   # plot_dir: 
   save_emulator: True

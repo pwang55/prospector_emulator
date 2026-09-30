@@ -72,7 +72,9 @@ valid_log10flux_filename = config["valid_log10flux_filename"]
 test_log10flux_filename = config["test_log10flux_filename"]
 
 chunk_size = config["chunk_size"]
-prior_dicts = config["prior_dicts"]
+# prior_dicts = config["prior_dicts"]
+# fixed_defaults = config["fixed_defaults"]
+param_dicts = config["param_dicts"]
 
 # modify filenames Ndat
 train_log10flux_filename = train_log10flux_filename.replace("Ndat", f"{int(ntrain/1000)}k")
@@ -82,7 +84,8 @@ test_log10flux_filename = test_log10flux_filename.replace("Ndat", f"{int(ntest/1
 
 # this section automatically creates default_params and train_param_keys, 
 # train_param_keys and default_params will be propragated all the way to the emulator mcmc code
-default_params = plibs.get_default_params(sfh_type, train_param_keys)
+# default_params = plibs.get_default_params(sfh_type, train_param_keys, fixed_defaults)
+prior_dicts, default_params = plibs.get_prior_dicts_default_params(sfh_type, train_param_keys, param_dicts)
 
 # create random values based on input prior settings and allowed train_param_keys
 x_train = plibs.generate_random_values(

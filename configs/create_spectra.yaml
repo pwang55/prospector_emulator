@@ -13,22 +13,22 @@ filters: /Users/brianwang76/SPHEREx/SPHEREx-L4-Redshift-Pipeline/redshifts/data/
 # nsamples and seeds
 # ============================================
 
-ntrain: 100000
-nvalid: 10000
-ntest: 10000
+ntrain: 80000
+nvalid: 8000
+ntest: 8000
 
-seed_train: 123
-seed_valid: 456
-seed_test: 789
+seed_train: 1111
+seed_valid: 2222
+seed_test: 3333
 
 # ============================================
 # target file names and location
 # "Ndat" will be replaced by {n/1000}k if in the provided filename
 # ============================================
 output_dir: random_samples
-train_log10flux_filename: train/train_log10flux_x_mfrac_z3_Ndat.h5
-valid_log10flux_filename: valid/valid_log10flux_x_mfrac_z3_Ndat.h5
-test_log10flux_filename: test/test_log10flux_x_mfrac_z3_Ndat.h5
+train_log10flux_filename: train/train_log10flux_x_mfrac_z0001_Ndat.h5
+valid_log10flux_filename: valid/valid_log10flux_x_mfrac_z0001_Ndat.h5
+test_log10flux_filename: test/test_log10flux_x_mfrac_z0001_Ndat.h5
 chunk_size: 2000
 
 # ============================================
@@ -38,15 +38,15 @@ chunk_size: 2000
 # use nbin - 1 logsfr_ratios parameters
 # ============================================
 train_param_keys:
-  - zred
+  # - zred
   - logmass
   - logzsol
   - logsfr_ratios0
   - logsfr_ratios1
   - logsfr_ratios2
   - logsfr_ratios3
-  # - logsfr_ratios4
-  # - logsfr_ratios5
+  - logsfr_ratios4
+  - logsfr_ratios5
   # - logsfr_ratios6
   # - logsfr_ratios7
   # - logsfr_ratios8
@@ -56,33 +56,40 @@ train_param_keys:
 
 
 # ============================================
-# Priors
+# Parameter dicts
+# when a parameter is not listed above in train_param_keys, it will use the 
+# "default" value listed below; otherwise, it will use the prior and bound to sample random parameters
 #
 # Available distributions:
 # uniform
 # loguniform
 # loguniform1p
-# student_t
-# truncnorm
+# student_t (df, loc, scale)
+# truncnorm (loc, scale)
 # ============================================
-prior_dicts:
+param_dicts:
 
   zred:
+    default: 0.001
     bounds: [0.0, 3.0]
     prior:
       dist: loguniform1p
 
   logmass:
+    default: 10.0
     bounds: [7.5, 13.5]
     prior:
       dist: uniform
 
   logzsol:
+    default: 0.0
     bounds: [-2.0, 0.2]
     prior:
       dist: uniform
 
   logsfr_ratios:
+    nbins: 7    # if logsfr_ratiosi are available in train_param_keys, they will determine actual nbin
+    default: 0.0
     bounds: [-5.0, 5.0]
     prior:
       dist: student_t
@@ -91,21 +98,103 @@ prior_dicts:
       scale: 3.0
 
   dust2:
+    default: 1.0
     bounds: [0.0, 4.0]
     prior:
       dist: truncnorm
       loc: 0.3
       scale: 3.0
 
+  dust_ratio:
+    default: 1.0
+    bounds: [0.0, 2.0]
+    prior:
+      dist: truncnorm
+      loc: 1.0
+      scale: 1.0
+
   dust_index:
+    default: -1.0
     bounds: [-1.2, 0.4]
     prior:
       dist: uniform
 
+  log10_duste_gamma:
+    default: -2.0
+    bounds: [-4.0, 0.0]
+    prior:
+      dist: truncnorm
+      loc: -2.0
+      scale: 2.0
+
+  duste_umin:
+    default: 1.0
+    bounds: [0.1, 25.0]
+    prior:
+      dist: truncnorm
+      loc: 1.0
+      scale: 20.0
+
   duste_qpah:
+    default: 2.0
     bounds: [0.0, 7.0]
     prior:
       dist: truncnorm
       loc: 2.0
       scale: 4.0
+
+  add_neb_emission: False
+  
+  add_neb_continuum: False
+
+  gas_logz:
+    default: 0.0
+    bounds: [-2.0, 0.5]
+    prior:
+      dist: uniform
+
+  gas_logu:
+    default: -2.0
+    bounds: [-4.0, -1.0]
+    prior:
+      dist: uniform
+
+  add_agn: False
+  
+  log10_fagn:
+    default: -4.0
+    bounds: [-5.0, 0.477] # -5 ~ log10(3)
+    prior:
+      dist: uniform
+  
+  log10_agn_tau:
+    default: 0.7
+    bounds: [0.7, 2.18] # log10(5) ~ log10(150)
+    prior:
+      dist: uniform
+
+
+  # # parametric SFH parameter set
+  # zred: 0.001
+  # logmass: 10
+  # logzsol: 0.0
+  # tage_tuniv: 0.9
+  # tau: 2.0
+  # fage_trunc: 0.95
+  # sf_slope: -0.5
+  # fburst: 0.1
+  # fage_burst: 0.9
+  # dust2: 1.0
+  # dust_ratio: 1.0
+  # dust_index: -1.0
+  # log10_duste_gamma: -2.0
+  # duste_umin: 1.0
+  # duste_qpah: 2.0
+  # add_neb_emission: False
+  # add_neb_continuum: False
+  # gas_logz: 0.0
+  # gas_logu: -2.0
+  # add_agn: False
+  # log10_fagn: -4.0
+  # log10_agn_tau: 0.7    # ~ log10(5)
 

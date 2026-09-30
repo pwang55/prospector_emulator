@@ -4,70 +4,145 @@ from numba import njit
 from scipy.stats import t, truncnorm
 import copy
 
-# TODO add log10_duste_gamma, log10_fagn defaults, log10_agn_tau
-# TODO add default values to data_creation_config.yaml
-# default myparam values
-emu_params_continuity_sfh = {'zred': 0.1,
-            'logmass': 10,
-            'logzsol': 0.0,
-            'nbins': 5,
-            'logsfr_ratios': [0.0, 0.0, 0.0, 0.0],
-            'dust2': 1.0,
-            'dust_ratio': 1.0,
-            'dust_index': -1.2,
-            # 'duste_gamma': 0.01,
-            'log10_duste_gamma': -2,
-            'duste_umin': 1.0,
-            'duste_qpah': 2.0,
-            'add_neb_emission': False,
-            'add_neb_continuum': False,
-            'gas_logz': 0.0,
-            'gas_logu': -2.0,
-            'add_agn': False,
-            # 'fagn': 0.0001,
-            'log10_fagn': -4,
-            # 'agn_tau': 5.0,
-            'log10_agn_tau': np.log10(5.0)
-            }
 
-# parametric_sfh version of myparam
-emu_params_parametric_sfh = {'zred': 0.1,
-            'logmass': 10,
-            'logzsol': 0.0,
-            'tage_tuniv': 0.9,
-            'tau': 2,
-            'fage_trunc': 0.95,
-            'sf_slope': -0.5,
-            'fburst': 0.1,
-            'fage_burst': 0.9,
-            'dust2': 1.0,
-            'dust_ratio': 1.0,
-            'dust_index': -1.2,
-            # 'duste_gamma': 0.01,
-            'log10_duste_gamma': -2,
-            'duste_umin': 1.0,
-            'duste_qpah': 2.0,
-            'add_neb_emission': False,
-            'add_neb_continuum': False,
-            'gas_logz': 0.0,
-            'gas_logu': -2.0,
-            'add_agn': False,
-            # 'fagn': 0.0001,
-            'log10_fagn': -4,
-            # 'agn_tau': 5.0,
-            'log10_agn_tau': np.log10(5.0)
-            }
+continuity_sfh_keys = [
+    'zred',
+    'logmass',
+    'logzsol',
+    'nbins',
+    'logsfr_ratios',
+    'dust2',
+    'dust_ratio',
+    'dust_index',
+    'log10_duste_gamma',
+    'duste_umin',
+    'duste_qpah',
+    'add_neb_emission',
+    'add_neb_continuum',
+    'gas_logz',
+    'gas_logu',
+    'add_agn',
+    'log10_fagn',
+    'log10_agn_tau'
+    ]
+
+parametric_sfh_keys = [
+    'zred',
+    'logmass',
+    'logzsol',
+    'tage_tuniv',
+    'tau',
+    'fage_trunc',
+    'sf_slope',
+    'fburst',
+    'fage_burst',
+    'dust2',
+    'dust_ratio',
+    'dust_index',
+    'log10_duste_gamma',
+    'duste_umin',
+    'duste_qpah',
+    'add_neb_emission',
+    'add_neb_continuum',
+    'gas_logz',
+    'gas_logu',
+    'add_agn',
+    'log10_fagn',
+    'log10_agn_tau'
+    ]
+
 
 log10_params_to_convert = ["log10_duste_gamma", "log10_fagn", "log10_agn_tau"]
 
-# after defining train_param_keys used in emulator training, this function
-# returns the default_params to keep track of default information
-def get_default_params(sfh_type, train_param_keys):    
+
+# # TODO get_prior_dicts() or get_dicts() that returns prior_dicts and default_params
+# def get_prior_dicts_default_params(sfh_type, train_param_keys, param_dicts):
+#     if sfh_type == 'continuity_sfh':
+#         all_keys = continuity_sfh_keys.copy()
+
+def get_prior_dicts_default_params(sfh_type, train_param_keys, param_dicts):
+    if sfh_type == "continuity_sfh":     # TODO parametric_sfh
+        all_keys = continuity_sfh_keys.copy()
+
+    prefix = "logsfr_ratios"
+
+    # ---------------------------------------------------------
+    # determine nbins
+    # logsfr_ratios0 ... logsfr_ratiosN correspond to nbins-1
+    # ---------------------------------------------------------
+    sfr_indices = [int(key[len(prefix):]) for key in train_param_keys if key.startswith(prefix)]
+
+    if sfr_indices:
+        nbins = max(sfr_indices) + 2
+    else:
+        nbins = param_dicts["logsfr_ratios"]["nbins"]
+
+    # ---------------------------------------------------------
+    # prior_dicts
+    # only parameters used in emulator training
+    #
+    # expanded logsfr_ratiosi all map back to one
+    # "logsfr_ratios" prior entry
+    # ---------------------------------------------------------
+    prior_dicts = {}
+
+    for key in train_param_keys:
+
+        if key.startswith(prefix):
+            param_key = prefix
+        else:
+            param_key = key
+
+        # avoid repeatedly adding logsfr_ratios
+        if param_key in prior_dicts:
+            continue
+
+        config = param_dicts[param_key]
+
+        prior_dicts[param_key] = {
+            k: v
+            for k, v in config.items()
+            if k not in ("default", "nbins")
+        }
+
+    # ---------------------------------------------------------
+    # default_params
+    # parameters needed by the SPS model but not trained
+    # ---------------------------------------------------------
+    train_param_base_keys = {
+        prefix if key.startswith(prefix) else key
+        for key in train_param_keys
+    }
+
+    default_params = {}
+
+    for key in all_keys:
+        if key == "nbins":
+            continue
+        if key in train_param_base_keys:
+            continue
+
+        config = param_dicts[key]
+
+        # boolean SPS switches are already direct values
+        if isinstance(config, bool):
+            default_params[key] = config
+
+        # normal parameters take their default value
+        else:
+            default_params[key] = config["default"]
 
     if sfh_type == "continuity_sfh":
-        myparams = emu_params_continuity_sfh
-    elif sfh_type == "parametric_sfh":
-        myparams = emu_params_parametric_sfh
+        default_params["nbins"] = nbins
+
+    return prior_dicts, default_params
+
+
+
+
+# after defining train_param_keys used in emulator training, this function
+# returns the default_params to keep track of default information
+def get_default_params(sfh_type, train_param_keys, fixed_defaults):    
 
     prefix = "logsfr_ratios"
 
@@ -77,12 +152,11 @@ def get_default_params(sfh_type, train_param_keys):
         if key.startswith(prefix)
     ]
 
-    # TODO if nbins doesn't exist this will break for now
-    nbins = max(sfr_indices) + 2 if sfr_indices else myparams["nbins"]
+    nbins = max(sfr_indices) + 2 if sfr_indices else fixed_defaults["nbins"]
 
     default_params = {
         key: value
-        for key, value in myparams.items()
+        for key, value in fixed_defaults.items()
         if key not in train_param_keys
         and key != "logsfr_ratios"
     }

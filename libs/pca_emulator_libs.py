@@ -8,7 +8,7 @@ import json
 # from numba import njit
 # from scipy.sparse.linalg import eigsh
 import h5py
-
+import libs.emulator_funcs as efuncs
 
 # input and output data scaler class
 class EmulatorScaler:
@@ -180,7 +180,7 @@ class EmulatorScaler:
             return coef_scaled * self.coef_std + self.coef_mean
         
         elif self.coef_scaling == 'coef0':
-            return coef_scaled * self.coef0_mean + self.coef0_mean
+            return coef_scaled * self.coef_std + self.coef0_mean
 
     def inverse_transform_mfrac(self, mfrac_scaled):
         self._check_fitted()
@@ -316,7 +316,7 @@ class SPSEmulator(nn.Module):
             "predict_mfrac": bool(self.predict_mfrac)
         }
 
-        self.shared, shared_output_dim = make_hidden_mlp(
+        self.shared, shared_output_dim = efuncs.make_hidden_mlp(
             input_dim=self.n_features,
             hidden_dims=shared_dims,
             activation=activation,
@@ -324,7 +324,7 @@ class SPSEmulator(nn.Module):
         )
 
         self.coef_head_hidden, coef_hidden_dim = (
-            make_hidden_mlp(
+            efuncs.make_hidden_mlp(
                 input_dim=shared_output_dim,
                 hidden_dims=coef_head_dims,
                 activation=activation,
@@ -336,7 +336,7 @@ class SPSEmulator(nn.Module):
 
         if self.predict_mfrac:
             self.mfrac_head_hidden, mfrac_hidden_dim = (
-                make_hidden_mlp(
+                efuncs.make_hidden_mlp(
                     input_dim=shared_output_dim,
                     hidden_dims=mfrac_head_dims,
                     activation=activation,
@@ -707,70 +707,6 @@ class EmulatorLoss(nn.Module):
             "mfrac": loss_mfrac,
         }
 
-class EarlyStopping:
-    def __init__(
-        self,
-        patience=50,
-        abs_tol=0.0,
-        rel_tol=1e-3,
-    ):
-        if patience < 1:
-            raise ValueError("patience must be at least 1.")
-        if abs_tol < 0.0 or rel_tol < 0.0:
-            raise ValueError("abs_tol and rel_tol must be nonnegative.")
-
-        self.patience = int(patience)
-        self.abs_tol = float(abs_tol)
-        self.rel_tol = float(rel_tol)
-        self.best_loss = float("inf")
-        self.best_state = None
-        self.best_epoch = None
-        self.epochs_without_improvement = 0
-
-    def update(
-        self,
-        monitored_loss,
-        model,
-        epoch,
-    ):
-        monitored_loss = float(monitored_loss)
-
-        if self.best_loss == float("inf"):
-            improved = True
-        else:
-            required_improvement = max(self.abs_tol, self.rel_tol * abs(self.best_loss))
-            improved = (monitored_loss < self.best_loss - required_improvement)
-
-        if improved:
-            self.best_loss = monitored_loss
-
-            # Store best weights on CPU.
-            self.best_state = {
-                name: tensor.detach().cpu().clone()
-                for name, tensor
-                in model.state_dict().items()
-            }
-
-            self.best_epoch = int(epoch)
-            self.epochs_without_improvement = 0
-
-        else:
-            self.epochs_without_improvement += 1
-
-        return (self.epochs_without_improvement >= self.patience)
-
-    def restore_best_weights(
-        self,
-        model,
-        device,
-    ):
-        if self.best_state is None:
-            raise RuntimeError("No best model state was recorded.")
-
-        model.load_state_dict(self.best_state)
-        model.to(device)
-
-
 
 # class to load pre-trained emulator from .pt file and can be used for prediction
 class LoadedSPSEmulator:
@@ -780,7 +716,7 @@ class LoadedSPSEmulator:
         device="cpu",
     ):
         # self.device = torch.device(device)
-        self.device = get_device(device)
+        self.device = efuncs.get_device(device)
 
         # Load checkpoint once
         self.checkpoint = torch.load(
@@ -800,12 +736,87 @@ class LoadedSPSEmulator:
 
         # PCA reconstruction arrays
         self.pca_lbs = np.asarray(self.checkpoint["pca_lbs"])
+        self.lbs = self.pca_lbs
         self.pca_modes = np.asarray(self.checkpoint["pca_modes"])
         self.pca_mean = np.asarray(self.checkpoint["pca_mean"])
 
         self.train_param_keys = self.checkpoint["train_param_keys"]
         self.default_params = self.checkpoint["default_params"]
         self.prior_dicts = self.checkpoint["prior_dicts"]
+        self._setup_scaler_tensors()
+        self._setup_pca_tensors()
+
+    def _setup_scaler_tensors(self):
+        """
+        Cache scaler constants as torch tensors on self.device.
+
+        These are used only by torch-native inference. The original
+        NumPy scaler is left unchanged for normal predict()/predict_one().
+        """
+
+        model_dtype = next(self.model.parameters()).dtype
+        scaler = self.scaler
+
+        # -------------------------------------------------------------
+        # x scaling
+        # -------------------------------------------------------------
+
+        self._x_mean_t = torch.as_tensor(scaler.x_mean, dtype=model_dtype, device=self.device)
+        self._x_std_t = torch.as_tensor(scaler.x_std, dtype=model_dtype, device=self.device)
+
+        # -------------------------------------------------------------
+        # coef scaling
+        # -------------------------------------------------------------
+
+        self._coef_mean_t = torch.as_tensor(self.scaler.coef_mean, dtype=model_dtype, device=self.device)
+        self._coef_std_t = torch.as_tensor(self.scaler.coef_std, dtype=model_dtype, device=self.device)
+
+        self._coef0_mean_t = torch.as_tensor(self.scaler.coef0_mean, dtype=model_dtype, device=self.device)
+        self._coef0_std_t = torch.as_tensor(self.scaler.coef0_std, dtype=model_dtype, device=self.device)
+
+        # -------------------------------------------------------------
+        # mfrac scaling
+        # -------------------------------------------------------------
+
+        if scaler.mfrac_mean is None:
+            self._mfrac_mean_t = None
+        else:
+            self._mfrac_mean_t = torch.as_tensor(scaler.mfrac_mean, dtype=model_dtype, device=self.device)
+
+        if scaler.mfrac_std is None:
+            self._mfrac_std_t = None
+        else:
+            self._mfrac_std_t = torch.as_tensor(scaler.mfrac_std, dtype=model_dtype, device=self.device)
+
+    def _transform_x_torch(self, x):
+        return (x - self._x_mean_t) / self._x_std_t
+    
+    def _inverse_transform_coef_torch(self, coef_scaled):
+        scaling = self.scaler.coef_scaling
+
+        if scaling == "none":
+            return coef_scaled
+
+        elif scaling == "standard":
+            return (coef_scaled * self._coef_std_t + self._coef_mean_t)
+
+        elif scaling == "coef0":
+            return (coef_scaled * self._coef0_std_t + self._coef0_mean_t)
+
+        raise ValueError(f"Unknown coef scaling: {scaling!r}")
+        
+
+    def _inverse_transform_mfrac_torch(self, mfrac_scaled):
+        scaling = self.scaler.mfrac_scaling
+
+        if scaling == "none":
+            return mfrac_scaled
+        elif scaling == "standard":
+            return (mfrac_scaled * self._mfrac_std_t + self._mfrac_mean_t)
+        elif scaling == "match_coef0":
+            return ((mfrac_scaled - self._coef0_mean_t) / self._coef0_std_t * self._mfrac_std_t + self._mfrac_mean_t)
+
+        raise ValueError(f"Unknown mfrac scaling: {scaling!r}")
 
     # single object inference method
     @torch.inference_mode()
@@ -841,7 +852,7 @@ class LoadedSPSEmulator:
         if return_spectrum:
             log10_flux = (coef @ self.pca_modes + self.pca_mean)
             result["log10_flux"] = log10_flux
-            result["lbs"] = self.pca_lbs
+            # result["lbs"] = self.pca_lbs
 
             if return_linear_flux:
                 result["flux"] = (10.0 ** log10_flux)
@@ -892,29 +903,136 @@ class LoadedSPSEmulator:
         coef = self.scaler.inverse_transform_coef(coef_scaled)
 
         result = {
-            "coef_scaled": coef_scaled,
+            # "coef_scaled": coef_scaled,
             "coef": coef,
         }
 
         if mfrac_batches:
             mfrac_scaled = torch.cat(mfrac_batches, dim=0).numpy()
-            result["mfrac_scaled"] = mfrac_scaled
+            # result["mfrac_scaled"] = mfrac_scaled
             result["mfrac"] = (self.scaler.inverse_transform_mfrac(mfrac_scaled))
 
         if return_spectrum:
             log10_flux = (coef @ self.pca_modes + self.pca_mean)
             result["log10_flux"] = log10_flux
-            result["lbs"] = self.pca_lbs
+            # result["lbs"] = self.pca_lbs
 
             if return_linear_flux:
                 result["flux"] = (10.0 ** log10_flux)
 
         return result
 
+    @torch.inference_mode()
+    def predict_torch(self, x, return_spectrum=True, return_linear_flux=True):
+        """
+        Batched inference that stays entirely in Torch.
+
+        Parameters
+        ----------
+        x : array-like or torch.Tensor
+            Raw, unscaled emulator parameters.
+
+            Shape:
+                (n_features,)
+                or
+                (n_objects, n_features)
+
+        Returns
+        -------
+        dict
+            {
+                "flux": physical linear flux tensor,
+                "mfrac": physical mfrac tensor,
+            }
+
+            Returned tensors remain on self.device.
+        """
+
+        model_dtype = next(self.model.parameters()).dtype
+
+        x = torch.as_tensor(x, dtype=model_dtype, device=self.device)
+        single_object = (x.ndim == 1)
+
+        if single_object:
+            x = x.unsqueeze(0)
+
+        if x.ndim != 2:
+            raise ValueError("x must have shape (n_features,) or (n_objects, n_features).")
+
+        # -------------------------------------------------------------
+        # Scale raw parameters
+        # -------------------------------------------------------------
+
+        x_scaled = self._transform_x_torch(x)
+
+        # -------------------------------------------------------------
+        # Neural network
+        # -------------------------------------------------------------
+
+        prediction_scaled = self.model(x_scaled)
+
+        # -------------------------------------------------------------
+        # Inverse-transform PCA coefficients
+        # -------------------------------------------------------------
+
+        coef = self._inverse_transform_coef_torch(prediction_scaled["coef"])
+
+        # -------------------------------------------------------------
+        # Build result
+        # -------------------------------------------------------------
+
+        result = {
+            # "flux": flux,
+            "coef": coef,
+            }
+
+        if return_spectrum:
+            log10_flux = (coef @ self._pca_modes_t + self._pca_mean_t)
+            result["log10_flux"] = log10_flux
+            # result["lbs"] = self.pca_lbs
+            if return_linear_flux:
+                flux = torch.pow(10.0, log10_flux)
+                result["flux"] = flux
+
+        if "mfrac" in prediction_scaled:
+            mfrac = self._inverse_transform_mfrac_torch(prediction_scaled["mfrac"])
+            if mfrac.ndim == 2 and mfrac.shape[1] == 1:
+                mfrac = mfrac[:, 0]
+            result["mfrac"] = mfrac
+
+        # -------------------------------------------------------------
+        # Optional single-object behavior
+        # -------------------------------------------------------------
+
+        if single_object:
+            for key in ("coef", "log10_flux", "flux", "mfrac"):
+                if key in result:
+                    result[key] = result[key][0]
+
+        return result
+
+    def _setup_pca_tensors(self):
+        model_dtype = next(self.model.parameters()).dtype
+
+        self._pca_modes_t = torch.as_tensor(
+            self.pca_modes,
+            dtype=model_dtype,
+            device=self.device,
+        )
+
+        self._pca_mean_t = torch.as_tensor(
+            self.pca_mean,
+            dtype=model_dtype,
+            device=self.device,
+        )
+
     def to(self, device):
         # self.device = torch.device(device)
-        self.device = get_device(device)
+        self.device = efuncs.get_device(device)
         self.model.to(self.device)
+        self.model.eval()
+        self._setup_scaler_tensors()
+        self._setup_pca_tensors()
         return self
 
 
@@ -922,187 +1040,6 @@ class LoadedSPSEmulator:
 # =============================================================================
 # Functions
 # =============================================================================
-
-def get_device(requested="auto"):
-    requested = requested.lower()
-
-    if requested != "auto":
-        return torch.device(requested)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-def load_data(filename):
-
-    if filename.split('.')[-1] == "npz":
-        dat = np.load(filename)
-        x = dat["x"]
-        coef = dat["coef"]
-        mfrac = dat["mfrac"]
-        train_param_keys = dat['train_param_keys'].tolist()
-        default_params = json.loads(dat["default_params"].item())
-        prior_dicts=json.loads(dat["prior_dicts"].item())
-        try:
-            flux = dat["flux"]
-        except:
-            flux = None
-
-        out_dict = {
-            "x": x,
-            "coef": coef,
-            "mfrac": mfrac,
-            "flux": flux,
-            "train_param_keys": train_param_keys,
-            "default_params": default_params,
-            "prior_dicts": prior_dicts
-        }
-        return out_dict
-        # return x_test, coef_test, mfrac_test, flux
-    elif filename.split('.')[-1] == "h5":
-        with h5py.File(filename, "r") as dat:
-            lamb_obs = dat["lamb_obs"][()]
-            x = dat["x"][()]
-            coef = dat["coef"][()]
-            flux_fiducial = dat["flux_fiducial"][()]
-            mfrac = dat["mfrac"][()]
-            scale = dat["scale"][()]
-            train_param_keys = dat.attrs["train_param_keys"].tolist()
-            default_params = json.loads(dat.attrs["default_params"])
-            prior_dicts = json.loads(dat.attrs["prior_dicts"])
-            try:
-                flux = 10**(dat["log10flux"][()])
-            except:
-                flux = None
-        out_dict = {
-            "x": x,
-            "lamb_obs": lamb_obs,
-            "coef": coef,
-            "mfrac": mfrac,
-            "flux": flux,
-            "flux_fiducial": flux_fiducial,
-            "scale": scale,
-            "train_param_keys": train_param_keys,
-            "default_params": default_params,
-            "prior_dicts": prior_dicts
-        }
-        return out_dict
-    
-def get_activation(name):
-    name = name.lower()
-    activation_classes = {
-        "gelu": nn.GELU,
-        "relu": nn.ReLU,
-        "silu": nn.SiLU,
-        "elu": nn.ELU,
-        "tanh": nn.Tanh,
-        "leaky_relu": nn.LeakyReLU,
-    }
-    if name not in activation_classes:
-        raise ValueError(
-            f"Unknown activation {name!r}. "
-            "Available options are "
-            f"{list(activation_classes)}."
-        )
-    return activation_classes[name]
-
-# function to make single hidden layer
-def make_hidden_mlp(
-    input_dim,
-    hidden_dims,
-    activation="gelu",
-    dropout=0.0,
-):
-    """
-    Create hidden layers without an output layer.
-
-    Parameters
-    ----------
-    input_dim : int
-        Input representation size.
-    hidden_dims : sequence of int
-        Width of each hidden layer. An empty tuple creates
-        an identity operation.
-    activation : str
-        Activation-function name.
-    dropout : float
-        Dropout probability.
-
-    Returns
-    -------
-    module : nn.Module
-        Hidden network.
-    final_dim : int
-        Dimension of the final representation.
-    """
-    Activation = get_activation(activation)
-    hidden_dims = tuple(hidden_dims)
-    layers = []
-    previous_dim = int(input_dim)
-
-    for hidden_dim in hidden_dims:
-        hidden_dim = int(hidden_dim)
-
-        if hidden_dim <= 0:
-            raise ValueError("All hidden-layer widths must be positive.")
-
-        layers.append(nn.Linear(previous_dim, hidden_dim))
-        layers.append(Activation())
-
-        if dropout > 0.0:
-            layers.append(nn.Dropout(dropout))
-
-        previous_dim = hidden_dim
-
-    if not layers:
-        return nn.Identity(), previous_dim
-
-    return nn.Sequential(*layers), previous_dim
-
-
-def make_optimizer(
-    name,
-    parameters,
-    learning_rate=1e-3,
-    weight_decay=0.0,
-    **kwargs,
-):
-    name = name.lower()
-
-    if name == "adam":
-        return torch.optim.Adam(
-            parameters,
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            **kwargs,
-        )
-
-    if name == "adamw":
-        return torch.optim.AdamW(
-            parameters,
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            **kwargs,
-        )
-
-    if name == "sgd":
-        return torch.optim.SGD(
-            parameters,
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            **kwargs,
-        )
-
-    if name == "rmsprop":
-        return torch.optim.RMSprop(
-            parameters,
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            **kwargs,
-        )
-
-    raise ValueError("Optimizer must be 'adam', 'adamw', 'sgd', or 'rmsprop'.")
 
 # one full epoch run function that makes data go through MLP and returns loss and gradient if training
 def run_epoch(
@@ -1227,7 +1164,7 @@ def fit_emulator(
     model.to(device)
     criterion.to(device)
 
-    early_stopping = EarlyStopping(
+    early_stopping = efuncs.EarlyStopping(
         patience=patience,
         abs_tol=abs_tol,
         rel_tol=rel_tol
