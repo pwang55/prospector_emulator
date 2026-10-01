@@ -65,7 +65,7 @@ Training:
   verbose: True
 
 Outputs:
-  outputs_dir: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/pca_emulators
+  outputs_dir: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/z0001_emulators
   save_plots: True
   # plot_dir: 
   save_emulator: True
