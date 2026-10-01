@@ -328,7 +328,7 @@ def parse_args():
     )
     parser.add_argument(
         # '-td',
-        '--abs-tol',
+        '--abs-min-delta',
         type=float,
         default=None,
         metavar="<float>",
@@ -336,7 +336,7 @@ def parse_args():
     )
     parser.add_argument(
         # '-td',
-        '--rel-tol',
+        '--rel-min-delta',
         type=float,
         default=None,
         metavar="<float>",

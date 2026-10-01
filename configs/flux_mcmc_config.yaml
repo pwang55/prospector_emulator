@@ -1,7 +1,7 @@
 # Configure file for prospector_mcmc.py
 Files:
   catalog: /Users/brianwang76/SPHEREx/testing/highz_clouds/cosmos/collate/l4_collated_006836.parq
-  SPHERExRefID: 1631838954976182273
+  SPHERExRefID: 1626913241667993600
 
 emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/flux_emulators/bestsofar_flux_emulator.pt
 
@@ -18,12 +18,12 @@ MCMC:
   verbose: True
 
 Outputs:
-  output_dir: mcmc_outputs/flux_mcmcs/1631838954976182273
+  output_dir: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/mcmc_outputs/flux_mcmcs/1626913241667993600
   save_sampler: True
   sampler_filename: use_id    # specific text filename, or 'use_id' to save as pros_mcmc_{SPHERExRefID}.h5
   output_filename: use_id     # filename without extension, for both report (.yaml) and mcmc results (.npz) 
   save_plots: True
-  plots_dir: mcmc_outputs/flux_mcmcs/1631838954976182273
+  plots_dir: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/mcmc_outputs/flux_mcmcs/1626913241667993600
 
 
 # ============================================

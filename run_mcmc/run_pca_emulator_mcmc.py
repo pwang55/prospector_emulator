@@ -331,7 +331,7 @@ def main():
             \n\tdiscard: \t{emcmc_obj.discard} \
             \n\tthin:    \t{emcmc_obj.thin} \
             \n\tzprior:  \t{emcmc_obj.zprior} \
-            \n\tparallel:\t{emcmc_obj.parallel}, \
+            \n\tparallel:\t{emcmc_obj.parallel} \
             \n\tvectorize:\t{emcmc_obj.vectorize}')
         
         print('Run MCMC...')
