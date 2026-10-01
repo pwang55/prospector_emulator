@@ -17,9 +17,9 @@ from pathlib import Path
 # import pandas as pd
 import json
 # import libs.emulator_libs as elibs
-import libs.param_libs as plibs
-import libs.data_libs as dlibs
-import libs.custom_prospector_tools as cpt
+import prospector_emulator_libs.param_libs as plibs
+import prospector_emulator_libs.data_libs as dlibs
+import prospector_emulator_libs.custom_prospector_tools as cpt
 # from sklearn.decomposition import PCA
 import yaml
 import argparse

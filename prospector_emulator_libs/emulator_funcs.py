@@ -12,17 +12,17 @@ class EarlyStopping:
     def __init__(
         self,
         patience=50,
-        abs_tol=0.0,
-        rel_tol=1e-3,
+        abs_min_delta=0.0,
+        rel_min_delta=1e-3,
     ):
         if patience < 1:
             raise ValueError("patience must be at least 1.")
-        if abs_tol < 0.0 or rel_tol < 0.0:
-            raise ValueError("abs_tol and rel_tol must be nonnegative.")
+        if abs_min_delta < 0.0 or rel_min_delta < 0.0:
+            raise ValueError("abs_min_delta and rel_min_delta must be nonnegative.")
 
         self.patience = int(patience)
-        self.abs_tol = float(abs_tol)
-        self.rel_tol = float(rel_tol)
+        self.abs_min_delta = float(abs_min_delta)
+        self.rel_min_delta = float(rel_min_delta)
         self.best_loss = float("inf")
         self.best_state = None
         self.best_epoch = None
@@ -39,7 +39,7 @@ class EarlyStopping:
         if self.best_loss == float("inf"):
             improved = True
         else:
-            required_improvement = max(self.abs_tol, self.rel_tol * abs(self.best_loss))
+            required_improvement = max(self.abs_min_delta, self.rel_min_delta * abs(self.best_loss))
             improved = (monitored_loss < self.best_loss - required_improvement)
 
         if improved:
@@ -256,4 +256,37 @@ def make_optimizer(
         )
 
     raise ValueError("Optimizer must be 'adam', 'adamw', 'sgd', or 'rmsprop'.")
+
+
+def make_scheduler(
+    name,
+    optimizer,
+    **kwargs,
+):
+    if name is None:
+        return None
+
+    name = name.lower()
+
+    if name == "reduce_on_plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            **kwargs,
+        )
+
+    if name == "step":
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            **kwargs,
+        )
+
+    if name == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            **kwargs,
+        )
+
+    raise ValueError("Scheduler must be None or 'reduce_on_plateau', 'step', 'cosine'")
+
+
 

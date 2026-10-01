@@ -4,7 +4,7 @@ Files:
   SPHERExRefID: 1631838954976182273
   filters: /Users/brianwang76/SPHEREx/SPHEREx-L4-Redshift-Pipeline/redshifts/data/FILTER/SPHEREx_306/fiducial_filters.txt
 
-emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/pca_emulators/emulator.pt
+emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/pca_emulators/bestsofar_emulator.pt
 
 MCMC:
   nwalkers: 32

@@ -1,10 +1,10 @@
 Data:
-  train_data: random_samples/train/train_x_coef_mfrac_z0001_80k.h5
+  train_data: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/random_samples/train/train_x_coef_mfrac_100k.h5
   valid_split: 0.1                 # this will be ignored if valid_data is not empty
   valid_split_seed: 42
-  valid_data: random_samples/valid/valid_x_coef_mfrac_flux_z0001_8k.h5
-  test_data: random_samples/test/test_x_coef_mfrac_flux_z0001_8k.h5
-  pca_file: random_samples/pca/log10_flux_pca_modes_z0001_80k.npz
+  valid_data: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/random_samples/valid/valid_x_coef_mfrac_flux_10k.h5
+  test_data: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/random_samples/test/test_x_coef_mfrac_flux_10k.h5
+  pca_file: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/random_samples/pca/log10_flux_pca_modes_100k.npz
 
 Device: auto
 
@@ -26,7 +26,7 @@ DataLoader:
   test_shuffle: True
 
 Emulator:
-  shared_dims: [1024, 1024, 1024, 512]
+  shared_dims: [512, 512, 512, 512]
   coef_head_dims: 
   mfrac_head_dims: 
   activation: gelu                      # gelu, relu, silu, elu, tanh, leaky_relu
@@ -47,19 +47,27 @@ Optimizer:
   learning_rate: 1.0E-3
   weight_decay: 0.0
 
+Scheduler:
+  name: reduce_on_plateau
+  factor: 0.5
+  scheduler_patience: 20
+  threshold: 1.0E-4
+  threshold_mode: rel
+  min_lr: 1.0E-6
+
 Training:
   # device: auto
-  max_epochs: 800
+  max_epochs: 1000
   patience: 50
-  abs_tol: 0.0
-  rel_tol: 0.01
+  abs_min_delta: 0.0
+  rel_min_delta: 0.001
   monitor: total                        # total, coef, mfrac
   verbose: True
 
 Outputs:
-  outputs_dir: emulator_outputs/z0001_emulators
+  outputs_dir: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/pca_emulators
   save_plots: True
   # plot_dir: 
   save_emulator: True
   # emulator_dir: 
-  emulator_filename: z0001_emulator.pt
+  emulator_filename: emulator.pt

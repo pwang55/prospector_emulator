@@ -6,10 +6,10 @@ from pathlib import Path
 from IPython.display import display, Math
 import corner
 from pprint import pprint
-import libs.pca_emulator_libs as elibs
-import libs.flux_emulator_libs as flibs
-import libs.data_libs as dlibs
-import libs.sps_libs as spslibs
+import prospector_emulator_libs.pca_emulator_libs as elibs
+import prospector_emulator_libs.flux_emulator_libs as flibs
+import prospector_emulator_libs.data_libs as dlibs
+import prospector_emulator_libs.sps_libs as spslibs
 import torch
 import copy
 import yaml

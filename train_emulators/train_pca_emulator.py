@@ -15,7 +15,7 @@ import yaml
 from pathlib import Path
 import argparse
 import json
-import libs.pca_emulator_libs as elibs
+import prospector_emulator_libs.pca_emulator_libs as elibs
 import time
 from datetime import timedelta
 
@@ -263,6 +263,54 @@ def parse_args():
     )
     parser.add_argument(
         # '-td',
+        '--scheduler',
+        type=str,
+        default=None,
+        metavar="<str>",
+        help="reduce_on_plateau"
+    )
+    parser.add_argument(
+        # '-td',
+        '--factor',
+        type=float,
+        default=None,
+        metavar="<float>",
+        help="Scheduler reducing LR factor"
+    )
+    parser.add_argument(
+        # '-td',
+        '--scheduler-patience',
+        type=int,
+        default=None,
+        metavar="<int>",
+        help="patience of scheduler to reduce LR"
+    )
+    parser.add_argument(
+        # '-td',
+        '--threshold',
+        type=float,
+        default=None,
+        metavar="<float>",
+        help="Scheduler threshold for measuring the new optimum"
+    )
+    parser.add_argument(
+        # '-td',
+        '--threshold_mode',
+        type=str,
+        default=None,
+        metavar="<str>",
+        help="Scheduler threshold mode, rel or abs"
+    )
+    parser.add_argument(
+        # '-td',
+        '--min-lr',
+        type=float,
+        default=None,
+        metavar="<float>",
+        help="minimum allowed learning rate with scheduler"
+    )
+    parser.add_argument(
+        # '-td',
         '--max-epochs',
         type=int,
         default=None,
@@ -392,11 +440,18 @@ def load_config(path, args):
         "optimizer": ("Optimizer", "name"),
         "learning_rate": ("Optimizer", "learning_rate"),
         "weight_decay": ("Optimizer", "weight_decay"),
+        # config Scheduler
+        "scheduler": ("Scheduler", "name"),
+        "factor": ("Scheduler", "factor"),
+        "scheduler_patience": ("Scheduler", "scheduler_patience"),
+        "threshold": ("Scheduler", "threshold"),
+        "threshold_mode": ("Scheduler", "threshold_mode"),
+        "min_lr": ("Scheduler", "min_lr"),
         # config Training
         "max_epochs": ("Training", "max_epochs"),
         "patience": ("Training", "patience"),
-        "abs_tol": ("Training", "abs_tol"),
-        "rel_tol": ("Training", "rel_tol"),
+        "abs_min_delta": ("Training", "abs_min_delta"),
+        "rel_min_delta": ("Training", "rel_min_delta"),
         "monitor": ("Training", "monitor"),
         "verbose": ("Training", "verbose"),
         # config Outputs
@@ -436,34 +491,6 @@ def format_runtime(seconds):
         f"{seconds:.1f}s"
     )
 
-# def parse_value(text):
-#     """Parse CLI values using YAML syntax: true, 3, 1e-3, [512, 256], etc."""
-#     return yaml.safe_load(text)
-
-# def set_nested(config, dotted_key, value):
-#     """Set a nested YAML entry such as model.activation=relu."""
-#     keys = dotted_key.split(".")
-#     current = config
-
-#     for key in keys[:-1]:
-#         if key not in current or not isinstance(current[key], dict):
-#             current[key] = {}
-#         current = current[key]
-
-#     current[keys[-1]] = value
-
-# def load_config(path, overrides):
-#     with open(path, "r", encoding="utf-8") as file:
-#         config = yaml.safe_load(file) or {}
-
-#     for override in overrides:
-#         if "=" not in override:
-#             raise ValueError(f"Override must be KEY=VALUE, received: {override!r}")
-#         key, value = override.split("=", 1)
-#         set_nested(config, key, parse_value(value))
-
-#     return config
-
 
 
 # =============================================================================
@@ -483,10 +510,10 @@ def rel_err_ratio_plots(
         x_min=-0.02,
         x_max=3.02,
         x_label="z",
-        l2_err_min=-0.05,
-        l2_err_max=0.6,
-        ratio_min=0.5,
-        ratio_max=1.5,
+        l2_err_min=-0.02,
+        l2_err_max=0.2,
+        ratio_min=0.8,
+        ratio_max=1.2,
         bins='log',
         gridsize=100,
         markersize=3,
@@ -655,9 +682,9 @@ def each_param_plots(
         nrowcol=None,
         gridsize=100,
         ymin1=-0.02,
-        ymax1=0.5,
-        ymin2 = 0.5,
-        ymax2 = 1.5,
+        ymax1=0.2,
+        ymin2=0.9,
+        ymax2=1.1,
         bins="log",
         save=False,
         filename="param_plots.png",
@@ -805,10 +832,12 @@ def main():
     print(f"\tcoef loss: {config['Loss']['coef_loss']}")
     print(f"\tmfrac loss: {config['Loss']['mfrac_loss']}")
     print(f"\tmfrac lambda: {config['Loss']['mfrac_lambda']}")
+    print("")
     print(f"Optimizer: {config['Optimizer']['name']}, learning rate={config['Optimizer']['learning_rate']}, weight decay={config['Optimizer']['weight_decay']}")
-    # print("")
+    print(f"Scheduler: {config['Scheduler']['name']}, factor={config['Scheduler']['factor']}, patience={config['Scheduler']['scheduler_patience']}, min_lr={config['Scheduler']['min_lr']}, threshold={config['Scheduler']['threshold']} ({config['Scheduler']['threshold_mode']})")
+    print("")
     print(f"Training settings: ")
-    print(f"\tmax_epochs={config['Training']['max_epochs']}, patience={config['Training']['patience']}, abs_tol={config['Training']['abs_tol']}, rel_tol={config['Training']['rel_tol']}")
+    print(f"\tmax_epochs={config['Training']['max_epochs']}, patience={config['Training']['patience']}, abs_min_delta={config['Training']['abs_min_delta']}, rel_min_delta={config['Training']['rel_min_delta']}")
     print(f"\ttrain batch size={config['DataLoader']['train_batch_size']}, valid batch size={config['DataLoader']['valid_batch_size']}, num worker={config['DataLoader']['train_num_workers']}")
     print("")
 
@@ -929,6 +958,17 @@ def main():
         weight_decay=config["Optimizer"]["weight_decay"]
     )
 
+    scheduler = elibs.efuncs.make_scheduler(
+        name=config["Scheduler"]["name"],
+        optimizer=optimizer,
+        mode="min",
+        factor=config["Scheduler"]["factor"],
+        patience=config["Scheduler"]["scheduler_patience"],
+        threshold=config["Scheduler"]["threshold"],
+        threshold_mode=config["Scheduler"]["threshold_mode"],
+        min_lr=config["Scheduler"]["min_lr"],
+    )
+
     train_start_time = time.perf_counter()
     # Actual training run
     history = elibs.fit_emulator(
@@ -938,10 +978,11 @@ def main():
         criterion=criterion,
         optimizer=optimizer,
         device=device,
+        scheduler=scheduler,
         max_epochs=config["Training"]["max_epochs"],
         patience=config["Training"]["patience"],
-        abs_tol=config["Training"]["abs_tol"],
-        rel_tol=config["Training"]["rel_tol"],
+        abs_min_delta=config["Training"]["abs_min_delta"],
+        rel_min_delta=config["Training"]["rel_min_delta"],
         monitor=config["Training"]["monitor"],
         verbose=verbose,
         )
@@ -1041,9 +1082,22 @@ def main():
         "pca_modes": np.asarray(pca_modes),
         "pca_mean": np.asarray(pca_mean),
 
+        "optimizer_config": config["Optimizer"],
         "optimizer_name": optimizer.__class__.__name__,
         "optimizer_defaults": optimizer.defaults.copy(),
         "optimizer_state_dict": optimizer.state_dict(),
+
+        "scheduler_config": config["Scheduler"],
+        "scheduler_name": (
+            scheduler.__class__.__name__
+            if scheduler is not None
+            else None
+        ),
+        "scheduler_state_dict": (
+            scheduler.state_dict()
+            if scheduler is not None
+            else None
+        ),
 
         "history": history,
         "loss_config": config["Loss"],

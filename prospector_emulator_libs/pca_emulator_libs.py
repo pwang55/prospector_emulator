@@ -8,7 +8,7 @@ import json
 # from numba import njit
 # from scipy.sparse.linalg import eigsh
 import h5py
-import libs.emulator_funcs as efuncs
+import prospector_emulator_libs.emulator_funcs as efuncs
 
 # input and output data scaler class
 class EmulatorScaler:
@@ -1146,10 +1146,11 @@ def fit_emulator(
     criterion,
     optimizer,
     device,
+    scheduler=None,
     max_epochs=500,
     patience=20,
-    abs_tol=0.0,
-    rel_tol=1e-5,
+    abs_min_delta=0.0,
+    rel_min_delta=1e-5,
     monitor="total",
     verbose=True,
 ):
@@ -1166,8 +1167,8 @@ def fit_emulator(
 
     early_stopping = efuncs.EarlyStopping(
         patience=patience,
-        abs_tol=abs_tol,
-        rel_tol=rel_tol
+        abs_min_delta=abs_min_delta,
+        rel_min_delta=rel_min_delta
     )
 
     history = {
@@ -1177,6 +1178,7 @@ def fit_emulator(
         "valid_total": [],
         "valid_coef": [],
         "valid_mfrac": [],
+        "learning_rate": [],
     }
 
     if verbose:
@@ -1199,6 +1201,8 @@ def fit_emulator(
             device=device,
             optimizer=None,
         )
+        if scheduler is not None:
+            scheduler.step(valid_metrics[monitor])
 
         for name in {
             "total",
@@ -1207,7 +1211,8 @@ def fit_emulator(
         }:
             history[f"train_{name}"].append(train_metrics[name])
             history[f"valid_{name}"].append(valid_metrics[name])
-
+            current_lr = optimizer.param_groups[0]["lr"]
+            history["learning_rate"].append(current_lr)
 
         if verbose:
             # Move to the previous line and clear both displayed lines.
@@ -1216,17 +1221,19 @@ def fit_emulator(
 
             print(
                 f"Best epoch:\t{early_stopping.best_epoch} | "
-                f"valid={early_stopping.best_loss:.5e}"
+                f"valid={early_stopping.best_loss:.4e}"
+                # f"lr={current_lr}"
                 # f"{early_stopping.epochs_without_improvement} epochs without improvement"
                 # f"(epoch {early_stopping.best_epoch})"
             )
 
             print(
                 f"Latest epoch:\t{epoch} | "
-                f"valid={valid_metrics[monitor]:.5e} | "
-                f"coef={valid_metrics['coef']:.5e} | "
-                f"mfrac={valid_metrics['mfrac']:.5e} | "
-                f"train={train_metrics[monitor]:.5e}"
+                f"valid={valid_metrics[monitor]:.4e} | "
+                f"coef={valid_metrics['coef']:.4e} | "
+                f"mfrac={valid_metrics['mfrac']:.4e} | "
+                f"train={train_metrics[monitor]:.4e} | "
+                f"lr={current_lr:.2e}"
             )
 
         # if verbose:

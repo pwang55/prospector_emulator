@@ -3,7 +3,7 @@ Files:
   catalog: /Users/brianwang76/SPHEREx/testing/highz_clouds/cosmos/collate/l4_collated_006836.parq
   SPHERExRefID: 1631838954976182273
 
-emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/flux_emulators/flux_emulator.pt
+emulator: /Users/brianwang76/SPHEREx/pwang55/prospector_emulator/emulator_outputs/flux_emulators/bestsofar_flux_emulator.pt
 
 MCMC:
   nwalkers: 32

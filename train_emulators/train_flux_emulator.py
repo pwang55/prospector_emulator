@@ -15,7 +15,7 @@ import yaml
 from pathlib import Path
 import argparse
 import json
-import libs.flux_emulator_libs as felibs
+import prospector_emulator_libs.flux_emulator_libs as felibs
 import time
 from datetime import timedelta
 
@@ -264,6 +264,54 @@ def parse_args():
     )
     parser.add_argument(
         # '-td',
+        '--scheduler',
+        type=str,
+        default=None,
+        metavar="<str>",
+        help="reduce_on_plateau"
+    )
+    parser.add_argument(
+        # '-td',
+        '--factor',
+        type=float,
+        default=None,
+        metavar="<float>",
+        help="Scheduler reducing LR factor"
+    )
+    parser.add_argument(
+        # '-td',
+        '--scheduler-patience',
+        type=int,
+        default=None,
+        metavar="<int>",
+        help="patience of scheduler to reduce LR"
+    )
+    parser.add_argument(
+        # '-td',
+        '--threshold',
+        type=float,
+        default=None,
+        metavar="<float>",
+        help="Scheduler threshold for measuring the new optimum"
+    )
+    parser.add_argument(
+        # '-td',
+        '--threshold_mode',
+        type=str,
+        default=None,
+        metavar="<str>",
+        help="Scheduler threshold mode, rel or abs"
+    )
+    parser.add_argument(
+        # '-td',
+        '--min-lr',
+        type=float,
+        default=None,
+        metavar="<float>",
+        help="minimum allowed learning rate with scheduler"
+    )
+    parser.add_argument(
+        # '-td',
         '--max-epochs',
         type=int,
         default=None,
@@ -394,11 +442,18 @@ def load_config(path, args):
         "optimizer": ("Optimizer", "name"),
         "learning_rate": ("Optimizer", "learning_rate"),
         "weight_decay": ("Optimizer", "weight_decay"),
+        # config Scheduler
+        "scheduler": ("Scheduler", "name"),
+        "factor": ("Scheduler", "factor"),
+        "scheduler_patience": ("Scheduler", "scheduler_patience"),
+        "threshold": ("Scheduler", "threshold"),
+        "threshold_mode": ("Scheduler", "threshold_mode"),
+        "min_lr": ("Scheduler", "min_lr"),
         # config Training
         "max_epochs": ("Training", "max_epochs"),
         "patience": ("Training", "patience"),
-        "abs_tol": ("Training", "abs_tol"),
-        "rel_tol": ("Training", "rel_tol"),
+        "abs_min_delta": ("Training", "abs_min_delta"),
+        "rel_min_delta": ("Training", "rel_min_delta"),
         "monitor": ("Training", "monitor"),
         "verbose": ("Training", "verbose"),
         # config Outputs
@@ -452,7 +507,7 @@ def rel_flux_err_plot(
     save=False,
     filename="rel_flux_err_plot.png",
     figsize=(10, 5),
-    ylims=(-0.2, 0.2),
+    ylims=(-0.1, 0.1),
     output_dirname="",
     dpi=300,
     fill_between_95_kwargs=None,
@@ -553,16 +608,20 @@ def mfrac_plots(
 
 def each_param_plots(
         x_test,
-        rel_l2_err,
-        med_ratio,
+        # rel_l2_err,
+        # med_ratio,
+        flux_pred,
+        flux_true,
+        # flux_scale='linear',
+        # yscale='linear',
         feature_names=None,
         figsize=(14, 12),
         nrowcol=None,
         gridsize=100,
         ymin1=-0.02,
-        ymax1=0.5,
-        ymin2 = 0.5,
-        ymax2 = 1.5,
+        ymax1=0.2,
+        ymin2=0.9,
+        ymax2=1.1,
         bins="log",
         save=False,
         filename="param_plots.png",
@@ -578,6 +637,16 @@ def each_param_plots(
     n_features = x_test.shape[1]
     if feature_names is None:
         feature_names = [f"param{i}" for i in range(n_features)]
+
+    # if flux_scale == 'log10':
+    #     flux_pred = np.log10(flux_pred)
+    #     flux_true = np.log10(flux_true)
+    #     y_label = r'$(log_{10}(f_{pred})-log_{10}(f_{true}))/log_{10}(f_{true})$'
+    # elif flux_scale == 'linear':
+    #     y_label = r'$(f_{pred}-f_{true})/f_{true}$'
+
+    rel_l2_err = np.linalg.norm(flux_pred-flux_true, axis=1)/np.linalg.norm(flux_true, axis=1)
+    med_ratio = np.median(flux_pred/flux_true, axis=1)
 
     if nrowcol is None:
         # nrows = int(np.ceil(np.sqrt(n_features))) # calculate the nrow as if the plot is square, take the smallest number that accommodate it
@@ -608,6 +677,8 @@ def each_param_plots(
             hb2 = axi2.hexbin(x_test[:,i], med_ratio, gridsize=gridsize, extent=[xmin, xmax, ymin2, ymax2], bins=bins, **kwargs)
             fig.colorbar(hb2, ax=axi2)
             axi2.set_xlabel(feature_names[i])
+            # axi1.set_yscale(yscale)
+            # axi2.set_yscale(yscale)
             axi2.grid()
         else:
             axi1.set_visible(False)
@@ -724,10 +795,12 @@ def main():
     print(f"\tflux loss: {config['Loss']['flux_loss']}")
     print(f"\tmfrac loss: {config['Loss']['mfrac_loss']}")
     print(f"\tmfrac lambda: {config['Loss']['mfrac_lambda']}")
+    print("")
     print(f"Optimizer: {config['Optimizer']['name']}, learning rate={config['Optimizer']['learning_rate']}, weight decay={config['Optimizer']['weight_decay']}")
-    # print("")
+    print(f"Scheduler: {config['Scheduler']['name']}, factor={config['Scheduler']['factor']}, patience={config['Scheduler']['scheduler_patience']}, min_lr={config['Scheduler']['min_lr']}, threshold={config['Scheduler']['threshold']} ({config['Scheduler']['threshold_mode']})")
+    print("")
     print(f"Training settings: ")
-    print(f"\tmax_epochs={config['Training']['max_epochs']}, patience={config['Training']['patience']}, abs_tol={config['Training']['abs_tol']}, rel_tol={config['Training']['rel_tol']}")
+    print(f"\tmax_epochs={config['Training']['max_epochs']}, patience={config['Training']['patience']}, abs_min_delta={config['Training']['abs_min_delta']}, rel_min_delta={config['Training']['rel_min_delta']}")
     print(f"\ttrain batch size={config['DataLoader']['train_batch_size']}, valid batch size={config['DataLoader']['valid_batch_size']}, num worker={config['DataLoader']['train_num_workers']}")
     print("")
 
@@ -847,6 +920,16 @@ def main():
         learning_rate=config["Optimizer"]["learning_rate"],
         weight_decay=config["Optimizer"]["weight_decay"]
     )
+    scheduler = felibs.efuncs.make_scheduler(
+        name=config["Scheduler"]["name"],
+        optimizer=optimizer,
+        mode="min",
+        factor=config["Scheduler"]["factor"],
+        patience=config["Scheduler"]["scheduler_patience"],
+        threshold=config["Scheduler"]["threshold"],
+        threshold_mode=config["Scheduler"]["threshold_mode"],
+        min_lr=config["Scheduler"]["min_lr"],
+    )
 
     train_start_time = time.perf_counter()
     # Actual training run
@@ -857,10 +940,11 @@ def main():
         criterion=criterion,
         optimizer=optimizer,
         device=device,
+        scheduler=scheduler,
         max_epochs=config["Training"]["max_epochs"],
         patience=config["Training"]["patience"],
-        abs_tol=config["Training"]["abs_tol"],
-        rel_tol=config["Training"]["rel_tol"],
+        abs_min_delta=config["Training"]["abs_min_delta"],
+        rel_min_delta=config["Training"]["rel_min_delta"],
         monitor=config["Training"]["monitor"],
         verbose=verbose,
         )
@@ -928,7 +1012,7 @@ def main():
             flux_pred=flux_pred,
             flux_true=flux_test,
             # flux_scale='log10',
-            flux_scale='linear',
+            # flux_scale='linear',
             yscale='linear',
             feature_names=train_param_keys,
             save=True,
@@ -945,11 +1029,23 @@ def main():
         "scaler_state": scaler.state_dict(),
 
         "lamb_obs": np.asarray(lamb_obs),
-
+        
+        "optimizer_config": config["Optimizer"],
         "optimizer_name": optimizer.__class__.__name__,
         "optimizer_defaults": optimizer.defaults.copy(),
         "optimizer_state_dict": optimizer.state_dict(),
 
+        "scheduler_config": config["Scheduler"],
+        "scheduler_name": (
+            scheduler.__class__.__name__
+            if scheduler is not None
+            else None
+        ),
+        "scheduler_state_dict": (
+            scheduler.state_dict()
+            if scheduler is not None
+            else None
+        ),
         "history": history,
         "loss_config": config["Loss"],
         "data_config": config["DataLoader"],

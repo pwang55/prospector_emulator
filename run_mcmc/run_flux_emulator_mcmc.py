@@ -36,9 +36,9 @@ import argparse
 import time
 from datetime import datetime
 # import h5py
-import libs.mcmc_libs as mlibs
-import libs.data_libs as dlibs
-import libs.sps_libs as slibs
+import prospector_emulator_libs.mcmc_libs as mlibs
+import prospector_emulator_libs.data_libs as dlibs
+import prospector_emulator_libs.sps_libs as slibs
 
 # default cosmology
 cosmology = Planck18

@@ -3,4 +3,6 @@ libs/__pycache__/
 random_samples/
 .DS_Store
 mcmc_outputs/
+emulator_outputs/
 data/
+*.egg-info/
