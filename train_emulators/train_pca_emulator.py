@@ -531,9 +531,10 @@ def rel_err_ratio_plots(
     elif style == "scatter":
         ax[0,0].scatter(x, flux_rel_l2_err, s=markersize, alpha=markeralpha, **kwargs)
     ax[0,0].set_xlabel(x_label)
+    # ax[0,0].set_ylabel("% error")
     ax[0,0].set_ylim(l2_err_min, l2_err_max)
     ax[0,0].grid(alpha=0.3)
-    ax[0,0].set_title('flux relative L2 error')
+    ax[0,0].set_title(r'$\|(f_{pred}-f_{true})\|_2/\|f_{true}\|_2$')
 
     if style == "hexbin":
         hb01 = ax[0,1].hexbin(x, coef_rel_l2_err, gridsize=gridsize, extent=[x_min, x_max, l2_err_min, l2_err_max], bins=bins, **kwargs)
@@ -543,7 +544,8 @@ def rel_err_ratio_plots(
     ax[0,1].set_xlabel(x_label)
     ax[0,1].set_ylim(l2_err_min, l2_err_max)
     ax[0,1].grid(alpha=0.3)
-    ax[0,1].set_title('coefs relative L2 error')
+    # ax[0,1].set_title('coefs relative L2 error')
+    ax[0,1].set_title(r'$\|(c_{pred}-c_{true})\|_2/\|c_{true}\|_2$')
 
     if style == "hexbin":
         hb10 = ax[1,0].hexbin(x, flux_median_ratio, gridsize=gridsize, extent=[x_min, x_max, ratio_min, ratio_max], bins=bins, **kwargs)
@@ -553,7 +555,9 @@ def rel_err_ratio_plots(
     ax[1,0].grid(alpha=0.6)
     ax[1,0].set_ylim(ratio_min, ratio_max)
     ax[1,0].set_xlabel(x_label)
-    ax[1,0].set_title('flux median ratio')
+    # ax[1,0].set_title('flux median ratio')
+    ax[1,0].set_title(r'$median(f_{pred}/f_{true})$')
+
 
     if style == "hexbin":
         hb10 = ax[1,1].hexbin(x, coef0_ratio, gridsize=gridsize, extent=[x_min, x_max, ratio_min, ratio_max], bins=bins, **kwargs)
@@ -563,7 +567,8 @@ def rel_err_ratio_plots(
     ax[1,1].grid(alpha=0.6)
     ax[1,1].set_ylim(ratio_min, ratio_max)
     ax[1,1].set_xlabel(x_label)
-    ax[1,1].set_title('coef0 ratio')
+    # ax[1,1].set_title('coef0 ratio')
+    ax[1,1].set_title(r'$median(c_{pred}/c_{true})$')
 
     # fig.suptitle(f'test metric = {test_metrics['total']:.4f}')
     fig.tight_layout()

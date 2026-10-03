@@ -489,8 +489,8 @@ def plot_corner(flat_samples,
 
 def plot_sed_sfh(lamb_obs,
                  spec_obs,
-                 err_obs,
                  spec_model,
+                 err_obs=None,
                  lamb_model=None,
                  agelims_model=None,
                  sfrsteps_model=None,
@@ -609,15 +609,22 @@ def plot_sed_sfh(lamb_obs,
     external_phots = external_phots or {}
 
     # set up default plotting styles
-    sed_obs_kwargs.setdefault('fmt', 'o')
-    sed_obs_kwargs.setdefault('elinewidth', 1)
-    sed_obs_kwargs.setdefault('markersize', 3)
-    sed_obs_kwargs.setdefault('markerfacecolor', 'none')
-    sed_obs_kwargs.setdefault('markeredgecolor', 'tab:blue')
-    sed_obs_kwargs.setdefault('color', 'tab:blue')
-    sed_obs_kwargs.setdefault('markeredgewidth', 1.5)
-    sed_obs_kwargs.setdefault('capsize', 2)
-    sed_obs_kwargs.setdefault('alpha', 0.7)
+    if err_obs is not None:
+        sed_obs_kwargs.setdefault('fmt', 'o')
+        sed_obs_kwargs.setdefault('elinewidth', 1)
+        sed_obs_kwargs.setdefault('markersize', 3)
+        sed_obs_kwargs.setdefault('markerfacecolor', 'none')
+        sed_obs_kwargs.setdefault('markeredgecolor', 'tab:blue')
+        sed_obs_kwargs.setdefault('color', 'tab:blue')
+        sed_obs_kwargs.setdefault('markeredgewidth', 1.5)
+        sed_obs_kwargs.setdefault('capsize', 2)
+        sed_obs_kwargs.setdefault('alpha', 0.7)
+        sed_obs_kwargs.setdefault('label', 'observed spectra')
+    else:
+        sed_obs_kwargs.setdefault('linewidth', 1.5)
+        sed_obs_kwargs.setdefault('color', 'tab:blue')
+        sed_obs_kwargs.setdefault('alpha', 0.8)
+        sed_obs_kwargs.setdefault('label', 'observed spectra')
 
     if lamb_model is None and len(spec_model) == len(lamb_obs):
         lamb_model = lamb_obs
@@ -633,7 +640,8 @@ def plot_sed_sfh(lamb_obs,
         # model is likely high-res model, so plot line
         sed_model_kwargs.setdefault('linewidth', 1)
         sed_model_kwargs.setdefault('color', 'tab:orange')
-        sed_model_kwargs.setdefault('alpha', 0.9)    
+        sed_model_kwargs.setdefault('alpha', 0.9)
+        sed_model_kwargs.setdefault('label', 'median model')
 
     sed_external_phot_kwargs.setdefault('fmt', 'o')
     sed_external_phot_kwargs.setdefault('elinewidth', 1)
@@ -666,19 +674,23 @@ def plot_sed_sfh(lamb_obs,
     for i, axi in enumerate(fig.get_axes()):
         if i == 0:
             # plot SED
-            nonzeros = err_obs != 50000
-            axi.errorbar(lamb_obs[nonzeros],
-                            spec_obs[nonzeros],
-                            err_obs[nonzeros],
-                            **sed_obs_kwargs,
-                            label='Observed spectra')
+            if err_obs is not None:
+                nonzeros = err_obs != 50000
+                axi.errorbar(lamb_obs[nonzeros],
+                                spec_obs[nonzeros],
+                                err_obs[nonzeros],
+                                **sed_obs_kwargs)
+            else:
+                axi.plot(lamb_obs, 
+                         spec_obs, 
+                         **sed_obs_kwargs)
+                
             ymin0 , ymax0 = axi.get_ylim()  # TEMP
             axi.set_ylim(ymin0, ymax0)
 
             axi.plot(lamb_model,
                     spec_model,
-                    **sed_model_kwargs,
-                    label='Medium model')
+                    **sed_model_kwargs)
 
             axi.grid()
             lbs_mins = [np.min(lamb_obs)]
