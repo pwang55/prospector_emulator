@@ -21,7 +21,7 @@ import yaml
 import argparse
 import h5py
 from scipy.sparse.linalg import eigsh
-
+import prospector_emulator_libs.data_libs as dlibs
 
 default_batch_size = 2000
 
@@ -167,7 +167,7 @@ pca_explained_variance_ratio = evals / np.sum(evals)
 print("")
 print(pca_explained_variance_ratio)
 
-pca_filename = pca_filename.replace("Ndat", f"{int(ntrain_total/1000)}k")
+pca_filename = pca_filename.replace("Ndat", dlibs.format_ndat(ntrain_total))
 
 np.savez(output_dir / pca_filename, 
          lbs=lbs, 
@@ -181,7 +181,7 @@ np.savez(output_dir / pca_filename,
 
 # print("Calculate PCA coefs for train data...")
 
-out_train_filename = out_train_filename.replace("Ndat", f"{int(ntrain_total/1000)}k")
+out_train_filename = out_train_filename.replace("Ndat", dlibs.format_ndat(ntrain_total))
 
 with h5py.File(output_dir / out_train_filename, "w") as f_out:
     f_out.attrs["train_param_keys"] = train_param_keys
@@ -289,7 +289,7 @@ for i, filename in enumerate(valid_log10flux_filenames):
         nvalid = x.shape[0]
         nvalid_total += nvalid
 
-out_valid_filename = out_valid_filename.replace("Ndat", f"{int(nvalid_total/1000)}k")
+out_valid_filename = out_valid_filename.replace("Ndat", dlibs.format_ndat(nvalid_total))
 
 with h5py.File(output_dir / out_valid_filename, "w") as f_out:
     f_out.attrs["train_param_keys"] = train_param_keys
@@ -409,7 +409,7 @@ for i, filename in enumerate(test_log10flux_filenames):
         ntest = x.shape[0]
         ntest_total += ntest
 
-out_test_filename = out_test_filename.replace("Ndat", f"{int(ntest_total/1000)}k")
+out_test_filename = out_test_filename.replace("Ndat", dlibs.format_ndat(ntest_total))
 
 with h5py.File(output_dir / out_test_filename, "w") as f_out:
     f_out.attrs["train_param_keys"] = train_param_keys

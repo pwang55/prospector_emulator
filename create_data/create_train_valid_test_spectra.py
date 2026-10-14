@@ -77,9 +77,9 @@ chunk_size = config["chunk_size"]
 param_dicts = config["param_dicts"]
 
 # modify filenames Ndat
-train_log10flux_filename = train_log10flux_filename.replace("Ndat", f"{int(ntrain/1000)}k")
-valid_log10flux_filename = valid_log10flux_filename.replace("Ndat", f"{int(nvalid/1000)}k")
-test_log10flux_filename = test_log10flux_filename.replace("Ndat", f"{int(ntest/1000)}k")
+train_log10flux_filename = train_log10flux_filename.replace("Ndat", dlibs.format_ndat(ntrain))
+valid_log10flux_filename = valid_log10flux_filename.replace("Ndat", dlibs.format_ndat(nvalid))
+test_log10flux_filename = test_log10flux_filename.replace("Ndat", dlibs.format_ndat(ntest))
 
 
 # this section automatically creates default_params and train_param_keys, 

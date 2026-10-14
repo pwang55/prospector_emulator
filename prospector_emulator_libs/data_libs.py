@@ -11,6 +11,14 @@ import pyarrow.dataset as ds
 # Catalog and data handling
 # ===========================================
 
+def format_ndat(n):
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:g}M"
+    elif n >= 1_000:
+        return f"{n / 1_000:g}k"
+    return str(n)
+
+
 filters_ls = sedpy.observate.load_filters(['bass_g', 'bass_r', 'mzls_z'])
 filters_ps1 = sedpy.observate.load_filters(['panstarrs_g', 'panstarrs_r', 'panstarrs_i', 'panstarrs_z', 'panstarrs_y'])
 filters_2mass = sedpy.observate.load_filters(['twomass_J', 'twomass_H', 'twomass_Ks'])
