@@ -6,6 +6,32 @@ import json
 import h5py
 
 
+def get_chunk_indices(indices, global_start, global_stop):
+    """
+    Return local indices of selected samples within a chunk.
+
+    Parameters
+    ----------
+    indices : ndarray or None
+        Sorted global sample indices. None selects all samples.
+    global_start, global_stop : int
+        Global start and stop positions of the current chunk.
+
+    Returns
+    -------
+    ndarray or None
+        Local indices relative to the current chunk.
+        None means all samples are selected.
+    """
+    if indices is None:
+        return None
+
+    left = np.searchsorted(indices, global_start)
+    right = np.searchsorted(indices, global_stop)
+
+    return indices[left:right] - global_start
+
+
 
 
 class EarlyStopping:
@@ -83,7 +109,7 @@ def get_device(requested="auto"):
         return torch.device("mps")
     return torch.device("cpu")
 
-def load_data(filename):
+def load_data(filename, return_flux=True):
 
     if filename.split('.')[-1] == "npz":
         dat = np.load(filename)
@@ -123,9 +149,12 @@ def load_data(filename):
             train_param_keys = dat.attrs["train_param_keys"].tolist()
             default_params = json.loads(dat.attrs["default_params"])
             prior_dicts = json.loads(dat.attrs["prior_dicts"])
-            try:
-                flux = 10**(dat["log10flux"][()])
-            except:
+            if return_flux:
+                try:
+                    flux = 10**(dat["log10flux"][()])
+                except:
+                    flux = None
+            else:
                 flux = None
         out_dict = {
             "x": x,

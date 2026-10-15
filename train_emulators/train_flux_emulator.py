@@ -18,6 +18,7 @@ import json
 import prospector_emulator_libs.flux_emulator_libs as felibs
 import time
 from datetime import timedelta
+import h5py
 
 
 # =============================================================================
@@ -710,65 +711,6 @@ def main():
 
     verbose = config["Training"]["verbose"]
 
-    # load data
-    train_data = felibs.efuncs.load_data(config["Data"]["train_data"])
-    x_train = train_data["x"]
-    flux_train = train_data["flux_fiducial"]
-    mfrac_train = train_data["mfrac"]
-    lamb_obs = train_data["lamb_obs"]
-
-    train_param_keys = train_data['train_param_keys']
-    default_params = train_data["default_params"]
-    prior_dicts = train_data["prior_dicts"]
-
-    if config["Data"]["valid_data"] is not None:
-        valid_data = felibs.efuncs.load_data(config["Data"]["valid_data"])
-        x_valid = valid_data["x"]
-        flux_valid = valid_data["flux_fiducial"]
-        mfrac_valid = valid_data["mfrac"]
-    else:
-        # if valid_data is not provided, use data split
-        rng = np.random.default_rng(seed=config["Data"]["valid_split_seed"])
-        total_train_idx = np.arange(len(x_train))
-        split_ratio = config["Data"]["valid_split"]
-        idx_valid = rng.choice(total_train_idx, size=int(len(x_train)*split_ratio), replace=False)
-        idx_train = np.setdiff1d(total_train_idx, idx_valid)
-        x_valid = x_train[idx_valid]
-        flux_valid = flux_train[idx_valid]
-        mfrac_valid = mfrac_train[idx_valid]
-        x_train = x_train[idx_train]
-        flux_train = flux_train[idx_train]
-        mfrac_train = mfrac_train[idx_train]
-
-    test_data = felibs.efuncs.load_data(config["Data"]["test_data"])
-    x_test = test_data["x"]
-    flux_test = test_data["flux_fiducial"]
-    mfrac_test = test_data["mfrac"]
-
-    # TEMP check negative or zero fluxes and interpolate them
-    if verbose:
-        print("check negative or zero fluxes...")
-    for i in range(len(flux_train)):
-        flux_i = flux_train[i]
-        h = flux_i <= 0
-        flux_i_interp = np.interp(lamb_obs[h], lamb_obs[~h], flux_i[~h])
-        flux_i[h] = flux_i_interp
-        flux_train[i] = flux_i
-
-    for i in range(len(flux_valid)):
-        flux_i = flux_valid[i]
-        h = flux_i <= 0
-        flux_i_interp = np.interp(lamb_obs[h], lamb_obs[~h], flux_i[~h])
-        flux_i[h] = flux_i_interp
-        flux_valid[i] = flux_i
-
-    for i in range(len(flux_test)):
-        flux_i = flux_test[i]
-        h = flux_i <= 0
-        flux_i_interp = np.interp(lamb_obs[h], lamb_obs[~h], flux_i[~h])
-        flux_i[h] = flux_i_interp
-        flux_test[i] = flux_i
-
     # first print out some settings on screen
     print(f"Train data:\t{config['Data']['train_data']}")
     if config["Data"]["valid_data"] is not None:
@@ -805,73 +747,100 @@ def main():
     print("")
 
 
+    train_files = config["Data"]["train_data"]
+    split_valid = config["Data"]["valid_data"] is None
+
+    train_files = config["Data"]["train_data"]
+    if isinstance(train_files, (str, Path)):
+        train_files = [train_files]
+
+    # read the settings from training data that should propagate to the emulator and MCMC
+    with h5py.File(train_files[0], "r") as f:
+        train_param_keys = f.attrs["train_param_keys"].tolist()
+        default_params = json.loads(f.attrs["default_params"])
+        prior_dicts = json.loads(f.attrs["prior_dicts"])
+        lamb_obs = f["lamb_obs"][()]
+
+    idx_train = None
+    idx_valid = None
+
+    if split_valid:
+        # Get total sample count without loading data into memory
+        n_total = 0
+        for filename in train_files:
+            with h5py.File(filename, "r") as f:
+                n_total += f["x"].shape[0]
+
+        # Random train/validation split
+        rng = np.random.default_rng(config["Data"]["valid_split_seed"])
+        n_valid = int(n_total * config["Data"]["valid_split"])
+        idx_valid = rng.choice(n_total, size=n_valid, replace=False)
+        idx_train = np.setdiff1d(np.arange(n_total), idx_valid)
+
+        if not 0 < config["Data"]["valid_split"] < 1:
+            raise ValueError("valid_split must be between 0 and 1.")
+
+        if not 0 < n_valid < n_total:
+            raise ValueError(f"Invalid train/validation sizes: n_total={n_total}, n_valid={n_valid}")
+
     # create Scaler
     scaler = felibs.FluxEmulatorScaler()
-    (x_train_scaled, 
-     flux_train_scaled, 
-     mfrac_train_scaled
-     ) = scaler.fit_transform(x_train, 
-                              flux_train, 
-                              mfrac_train, 
-                              flux_scaling=config["Scaler"]["flux_scaling"],
-                              mfrac_scaling=config["Scaler"]["mfrac_scaling"])
-    (x_valid_scaled, 
-     flux_valid_scaled, 
-     mfrac_valid_scaled
-    ) = scaler.transform(x_valid, 
-                         flux_valid, 
-                         mfrac_valid)
-    (x_test_scaled, 
-     flux_test_scaled, 
-     mfrac_test_scaled
-    ) = scaler.transform(x_test, 
-                         flux_test, 
-                         mfrac_test)
-
-    x_train_scaled = x_train_scaled.astype(np.float32)
-    flux_train_scaled = flux_train_scaled.astype(np.float32)
-    mfrac_train_scaled = mfrac_train_scaled.astype(np.float32)
-
-    x_valid_scaled = x_valid_scaled.astype(np.float32)
-    flux_valid_scaled = flux_valid_scaled.astype(np.float32)
-    mfrac_valid_scaled = mfrac_valid_scaled.astype(np.float32)
-
-    x_test_scaled = x_test_scaled.astype(np.float32)
-    flux_test_scaled = flux_test_scaled.astype(np.float32)
-    mfrac_test_scaled = mfrac_test_scaled.astype(np.float32)
-
-    # Create Dataset objects and DataLoaders
-    train_dataset = felibs.FluxSPSDataset(x_train_scaled, flux_train_scaled, mfrac_train_scaled)
-    valid_dataset = felibs.FluxSPSDataset(x_valid_scaled, flux_valid_scaled, mfrac_valid_scaled)
-    test_dataset = felibs.FluxSPSDataset(x_test_scaled, flux_test_scaled, mfrac_test_scaled)
+    scaler.fit_from_files(
+        filenames=config["Data"]["train_data"],
+        flux_scaling=config["Scaler"]["flux_scaling"],
+        mfrac_scaling=config["Scaler"]["mfrac_scaling"],
+        chunk_size=config["Scaler"].get("chunk_size", 100000),
+        indices=idx_train
+    )
 
     use_cuda = device.type == "cuda"
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config["DataLoader"]["train_batch_size"],
-        shuffle=config["DataLoader"]["train_shuffle"],
-        num_workers=config["DataLoader"]["train_num_workers"],
-        pin_memory=use_cuda,
-        # persistent_workers=config["DataLoader"]["train_persistent_workers"],
-        persistent_workers=(config["DataLoader"]["train_num_workers"]>0)
-    )
-    valid_loader = DataLoader(
-        valid_dataset,
-        batch_size=config["DataLoader"]["valid_batch_size"],
-        shuffle=config["DataLoader"]["valid_shuffle"],
-        num_workers=config["DataLoader"]["train_num_workers"],
-        pin_memory=use_cuda,
-        # persistent_workers=config["DataLoader"]["train_persistent_workers"],
-        persistent_workers=(config["DataLoader"]["train_num_workers"]>0),
-    )
-    test_loader = DataLoader(
-        test_dataset,
+
+    if not split_valid:
+        train_loader = felibs.make_in_memory_loader(
+            filenames=train_files,
+            scaler=scaler,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            shuffle=config["DataLoader"]["train_shuffle"],
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+        valid_loader = felibs.make_in_memory_loader(
+            filenames=config["Data"]["valid_data"],
+            scaler=scaler,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            # shuffle=config["DataLoader"]["valid_shuffle"],
+            shuffle=False,
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+    else:
+        full_dataset = felibs.make_sps_memory_dataset(filenames=train_files, scaler=scaler)
+        train_loader = felibs.make_in_memory_loader(
+            dataset=full_dataset,
+            indices=idx_train,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            shuffle=config["DataLoader"]["train_shuffle"],
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+        valid_loader = felibs.make_in_memory_loader(
+            dataset=full_dataset,
+            indices=idx_valid,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            # shuffle=config["DataLoader"]["valid_shuffle"],
+            shuffle=False,
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+
+    test_loader = felibs.make_in_memory_loader(
+        filenames=config["Data"]["test_data"],
+        scaler=scaler,
         batch_size=config["DataLoader"]["test_batch_size"],
-        shuffle=config["DataLoader"]["test_shuffle"],
+        # shuffle=config["DataLoader"]["test_shuffle"],
+        shuffle=False,
         num_workers=config["DataLoader"]["test_num_workers"],
         pin_memory=use_cuda,
-        # persistent_workers=config["DataLoader"]["test_persistent_workers"],
-        persistent_workers=(config["DataLoader"]["test_num_workers"]>0),
     )
 
     # construct the emulator architecture with config settings
@@ -885,8 +854,8 @@ def main():
     else:
         mfrac_head_dims = ()
 
-    n_features = x_train.shape[1]
-    n_fluxes = flux_train.shape[1]
+    n_features = len(scaler.x_mean)
+    n_fluxes = len(lamb_obs)
 
     # Create emulator model object with config architecture and send to device
     model = felibs.FluxSPSEmulator(
@@ -952,6 +921,15 @@ def main():
     if verbose:
         # print(f"Training time", timedelta(seconds=round(train_elapsed_time)))
         print(f"Training time: {format_runtime(train_elapsed_time)}")
+
+    # Evaluations with test set
+
+    # first get the test dataset back and get all values in memory
+    test_dataset = test_loader.dataset
+
+    x_test = scaler.inverse_transform_x(test_dataset.x.numpy())
+    flux_test = scaler.inverse_transform_flux(test_dataset.flux.numpy())
+    mfrac_test = scaler.inverse_transform_mfrac(test_dataset.mfrac.numpy())
 
     # prediction with test set
     predictions = felibs.predict_flux_emulator(

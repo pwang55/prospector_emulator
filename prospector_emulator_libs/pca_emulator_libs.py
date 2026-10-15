@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset #, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 import json
 # from pathlib import Path
 # import yaml
@@ -9,6 +9,73 @@ import json
 # from scipy.sparse.linalg import eigsh
 import h5py
 import prospector_emulator_libs.emulator_funcs as efuncs
+from pathlib import Path
+
+
+def make_sps_memory_dataset(filenames, scaler):
+    """
+    Load x, coef, and mfrac from one or more HDF5 files into RAM,
+    apply an already-fitted scaler, and construct an SPSDataset.
+
+    Files are concatenated in the supplied order.
+    """
+    if isinstance(filenames, (str, Path)):
+        filenames = [filenames]
+
+    x_list = []
+    coef_list = []
+    mfrac_list = []
+
+    for filename in filenames:
+        with h5py.File(filename, "r") as f:
+
+            x = scaler.transform_x(f["x"][:])
+            coef = scaler.transform_coef(f["coef"][:])
+            mfrac = scaler.transform_mfrac(f["mfrac"][:])
+
+            x_list.append(np.asarray(x, dtype=np.float32))
+            coef_list.append(np.asarray(coef, dtype=np.float32))
+            mfrac_list.append(np.asarray(mfrac, dtype=np.float32))
+
+    return SPSDataset(
+        x_scaled=np.concatenate(x_list, axis=0),
+        coef_scaled=np.concatenate(coef_list, axis=0),
+        mfrac_scaled=np.concatenate(mfrac_list, axis=0),
+    )
+
+def make_in_memory_loader(
+    filenames=None,
+    scaler=None,
+    dataset=None,
+    indices=None,
+    batch_size=2048,
+    shuffle=True,
+    num_workers=0,
+    pin_memory=False,
+):
+    """
+    Create a DataLoader from HDF5 files or an existing Dataset.
+
+    If dataset is provided, filenames and scaler are not needed.
+    """
+
+    if dataset is None:
+        if filenames is None or scaler is None:
+            raise ValueError("Provide either dataset or both filenames and scaler.")
+
+        dataset = make_sps_memory_dataset(filenames=filenames, scaler=scaler)
+
+    if indices is not None:
+        dataset = Subset(dataset, indices)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0),
+    )
 
 # input and output data scaler class
 class EmulatorScaler:
@@ -116,6 +183,195 @@ class EmulatorScaler:
 
         return self
 
+    # fit from batch of multiple files
+    def fit_from_files(
+        self,
+        filenames,
+        coef_scaling="none",
+        mfrac_scaling="standard",
+        chunk_size=100000,
+        indices=None,
+    ):
+        """
+        Fit scaler statistics incrementally from one or more HDF5 files.
+
+        Each file must contain:
+            x     : (ndata, nfeatures)
+            coef  : (ndata, ncoefs)
+            mfrac : (ndata,)
+
+        Only one chunk is held in memory at a time.
+        """
+
+        if isinstance(filenames, (str, Path)):
+            filenames = [filenames]
+
+        if not filenames:
+            raise ValueError("No training files provided.")
+
+        if indices is not None:
+            indices = np.asarray(indices, dtype=np.int64)
+
+            if indices.ndim != 1 or len(indices) == 0:
+                raise ValueError("indices must be a nonempty 1D array.")
+
+            if np.any(indices < 0):
+                raise ValueError("indices must be nonnegative.")
+
+            if np.any(np.diff(indices) <= 0):
+                raise ValueError("indices must be sorted and unique.")
+
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be positive.")
+
+        valid_coef_scalings = {"none", "standard", "coef0"}
+        valid_mfrac_scalings = {"none", "standard", "match_coef0"}
+
+        if coef_scaling not in valid_coef_scalings:
+            raise ValueError(f"Unknown coef_scaling: {coef_scaling}")
+
+        if mfrac_scaling not in valid_mfrac_scalings:
+            raise ValueError(f"Unknown mfrac_scaling: {mfrac_scaling}")
+
+        if mfrac_scaling == "match_coef0" and coef_scaling != "none":
+            raise ValueError(
+                "mfrac_scaling='match_coef0' requires coef_scaling='none'"
+            )
+
+        self.coef_scaling = coef_scaling
+        self.mfrac_scaling = mfrac_scaling
+
+        # Running statistics
+        n_total = 0
+
+        x_mean = x_M2 = None
+        coef_mean = coef_M2 = None
+        mfrac_mean = mfrac_M2 = None
+
+        global_offset = 0
+
+        for filename in filenames:
+
+            with h5py.File(filename, "r") as f:
+
+                n_samples = len(f["x"])
+
+                for start in range(0, n_samples, chunk_size):
+
+                    stop = min(start + chunk_size, n_samples)
+
+                    # Determine selected samples within this chunk
+                    local_idx = efuncs.get_chunk_indices(
+                        indices,
+                        global_offset + start,
+                        global_offset + stop,
+                    )
+
+                    if local_idx is not None and len(local_idx) == 0:
+                        continue
+
+                    # Read contiguous chunks from HDF5
+                    x = np.asarray(f["x"][start:stop], dtype=np.float64)
+                    coef = np.asarray(f["coef"][start:stop], dtype=np.float64)
+                    mfrac = np.asarray(f["mfrac"][start:stop], dtype=np.float64)
+
+                    # Select training samples only
+                    if local_idx is not None:
+                        x = x[local_idx]
+                        coef = coef[local_idx]
+                        mfrac = mfrac[local_idx]
+
+                    n = len(x)
+
+                    if n == 0:
+                        continue
+
+                    if coef.shape[0] != n or mfrac.shape[0] != n:
+                        raise ValueError(f"Inconsistent dataset lengths in {filename}")
+
+                    if not (
+                        np.all(np.isfinite(x))
+                        and np.all(np.isfinite(coef))
+                        and np.all(np.isfinite(mfrac))
+                    ):
+                        raise ValueError(f"Nonfinite training data in {filename}")
+
+                    # Chunk statistics
+                    xm = np.mean(x, axis=0)
+                    cm = np.mean(coef, axis=0)
+                    mm = np.mean(mfrac)
+
+                    x2 = np.sum((x - xm) ** 2, axis=0)
+                    c2 = np.sum((coef - cm) ** 2, axis=0)
+                    m2 = np.sum((mfrac - mm) ** 2)
+
+                    if n_total == 0:
+
+                        x_mean, x_M2 = xm, x2
+                        coef_mean, coef_M2 = cm, c2
+                        mfrac_mean, mfrac_M2 = mm, m2
+
+                        n_total = n
+
+                    else:
+
+                        new_total = n_total + n
+
+                        # Combine x statistics
+                        dx = xm - x_mean
+                        x_mean += dx * n / new_total
+                        x_M2 += x2 + dx**2 * n_total * n / new_total
+
+                        # Combine coefficient statistics
+                        dc = cm - coef_mean
+                        coef_mean += dc * n / new_total
+                        coef_M2 += c2 + dc**2 * n_total * n / new_total
+
+                        # Combine mfrac statistics
+                        dm = mm - mfrac_mean
+                        mfrac_mean += dm * n / new_total
+                        mfrac_M2 += m2 + dm**2 * n_total * n / new_total
+
+                        n_total = new_total
+
+                global_offset += n_samples
+
+        # After processing all files
+        if indices is not None and indices[-1] >= global_offset:
+            raise ValueError("indices contain values outside the dataset.")
+
+        if n_total == 0:
+            raise ValueError("Training files contain no samples.")
+
+        # Final population means and standard deviations
+        self.x_mean = x_mean
+        self.x_std = np.sqrt(np.maximum(x_M2 / n_total, 0.0))
+
+        self.coef_mean = coef_mean
+        self.coef_std = np.sqrt(np.maximum(coef_M2 / n_total, 0.0))
+
+        self.coef0_mean = self.coef_mean[0]
+        self.coef0_std = self.coef_std[0]
+
+        self.mfrac_mean = float(mfrac_mean)
+        self.mfrac_std = float(np.sqrt(max(mfrac_M2 / n_total, 0.0)))
+
+        # Same validation as fit()
+        if np.any(self.x_std < self.eps):
+            indices = np.flatnonzero(self.x_std < self.eps)
+            raise ValueError(
+                f"Input features with nearly zero standard deviation: "
+                f"{indices.tolist()}"
+            )
+
+        if self.coef0_std < self.eps:
+            raise ValueError("coef[:, 0] standard deviation is too small.")
+
+        if self.mfrac_std < self.eps:
+            raise ValueError("mfrac standard deviation is too small.")
+
+        return self
+
     def transform_x(self, x):
         self._check_fitted()
         x = np.asarray(x, dtype=np.float64)
@@ -180,7 +436,7 @@ class EmulatorScaler:
             return coef_scaled * self.coef_std + self.coef_mean
         
         elif self.coef_scaling == 'coef0':
-            return coef_scaled * self.coef_std + self.coef0_mean
+            return coef_scaled * self.coef0_std + self.coef0_mean
 
     def inverse_transform_mfrac(self, mfrac_scaled):
         self._check_fitted()
@@ -274,6 +530,9 @@ class SPSDataset(Dataset):
 
         if self.coef.shape[0] != ndata:
             raise ValueError("x and c have different ndata")
+
+        if self.mfrac.shape[0] != ndata:
+            raise ValueError("x and mfrac have different ndata")
 
     def __len__(self):
         return self.x.shape[0]

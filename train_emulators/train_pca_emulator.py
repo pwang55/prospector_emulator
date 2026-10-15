@@ -18,6 +18,7 @@ import json
 import prospector_emulator_libs.pca_emulator_libs as elibs
 import time
 from datetime import timedelta
+import h5py
 
 # =============================================================================
 # Configuration and command-line handling
@@ -765,50 +766,11 @@ def main():
 
     verbose = config["Training"]["verbose"]
 
-    # load data
-    train_data = elibs.efuncs.load_data(config["Data"]["train_data"])
-    x_train = train_data["x"]
-    coef_train = train_data["coef"]
-    mfrac_train = train_data["mfrac"]
-    train_param_keys = train_data['train_param_keys']
-    default_params = train_data["default_params"]
-    prior_dicts = train_data["prior_dicts"]
-
-    if config["Data"]["valid_data"] is not None:
-        valid_data = elibs.efuncs.load_data(config["Data"]["valid_data"])
-        x_valid = valid_data["x"]
-        coef_valid = valid_data["coef"]
-        mfrac_valid = valid_data["mfrac"]
-    else:
-        # if valid_data is not provided, use data split
-        rng = np.random.default_rng(seed=config["Data"]["valid_split_seed"])
-        total_train_idx = np.arange(len(x_train))
-        split_ratio = config["Data"]["valid_split"]
-        idx_valid = rng.choice(total_train_idx, size=int(len(x_train)*split_ratio), replace=False)
-        idx_train = np.setdiff1d(total_train_idx, idx_valid)
-        x_valid = x_train[idx_valid]
-        coef_valid = coef_train[idx_valid]
-        mfrac_valid = mfrac_train[idx_valid]
-        x_train = x_train[idx_train]
-        coef_train = coef_train[idx_train]
-        mfrac_train = mfrac_train[idx_train]
-
-    test_data = elibs.efuncs.load_data(config["Data"]["test_data"])
-    x_test = test_data["x"]
-    coef_test = test_data["coef"]
-    mfrac_test = test_data["mfrac"]
-    flux_test = test_data["flux"]
-
     # load PCA
-    # if config["Data"]["pca_file"] is not None:
     pca_data = np.load(config["Data"]["pca_file"])
     lbs = pca_data['lbs']
     pca_modes = pca_data['modes']
     pca_mean = pca_data['mean']
-    # else:
-        # lbs = None
-        # pca_modes = None
-        # pca_mean = None
 
     # first print out some settings on screen
     print(f"Train data:\t{config['Data']['train_data']}")
@@ -846,73 +808,99 @@ def main():
     print(f"\ttrain batch size={config['DataLoader']['train_batch_size']}, valid batch size={config['DataLoader']['valid_batch_size']}, num worker={config['DataLoader']['train_num_workers']}")
     print("")
 
+    train_files = config["Data"]["train_data"]
+    split_valid = config["Data"]["valid_data"] is None
+
+    train_files = config["Data"]["train_data"]
+    if isinstance(train_files, (str, Path)):
+        train_files = [train_files]
+
+    # read the settings from training data that should propagate to the emulator and MCMC
+    with h5py.File(train_files[0], "r") as f:
+        train_param_keys = f.attrs["train_param_keys"].tolist()
+        default_params = json.loads(f.attrs["default_params"])
+        prior_dicts = json.loads(f.attrs["prior_dicts"])
+        # lamb_obs = f["lamb_obs"][()]
+
+    idx_train = None
+    idx_valid = None
+
+    if split_valid:
+        # Get total sample count without loading data into memory
+        n_total = 0
+        for filename in train_files:
+            with h5py.File(filename, "r") as f:
+                n_total += f["x"].shape[0]
+
+        # Random train/validation split
+        rng = np.random.default_rng(config["Data"]["valid_split_seed"])
+        n_valid = int(n_total * config["Data"]["valid_split"])
+        idx_valid = rng.choice(n_total, size=n_valid, replace=False)
+        idx_train = np.setdiff1d(np.arange(n_total), idx_valid)
+
+        if not 0 < config["Data"]["valid_split"] < 1:
+            raise ValueError("valid_split must be between 0 and 1.")
+
+        if not 0 < n_valid < n_total:
+            raise ValueError(f"Invalid train/validation sizes: n_total={n_total}, n_valid={n_valid}")
+
     # create Scaler
     scaler = elibs.EmulatorScaler()
-    (x_train_scaled, 
-     coef_train_scaled, 
-     mfrac_train_scaled
-     ) = scaler.fit_transform(x_train, 
-                              coef_train, 
-                              mfrac_train, 
-                              coef_scaling=config["Scaler"]["coef_scaling"],
-                              mfrac_scaling=config["Scaler"]["mfrac_scaling"])
-    (x_valid_scaled, 
-     coef_valid_scaled, 
-     mfrac_valid_scaled
-    ) = scaler.transform(x_valid, 
-                         coef_valid, 
-                         mfrac_valid)
-    (x_test_scaled, 
-     coef_test_scaled, 
-     mfrac_test_scaled
-    ) = scaler.transform(x_test, 
-                         coef_test, 
-                         mfrac_test)
-
-    x_train_scaled = x_train_scaled.astype(np.float32)
-    coef_train_scaled = coef_train_scaled.astype(np.float32)
-    mfrac_train_scaled = mfrac_train_scaled.astype(np.float32)
-
-    x_valid_scaled = x_valid_scaled.astype(np.float32)
-    coef_valid_scaled = coef_valid_scaled.astype(np.float32)
-    mfrac_valid_scaled = mfrac_valid_scaled.astype(np.float32)
-
-    x_test_scaled = x_test_scaled.astype(np.float32)
-    coef_test_scaled = coef_test_scaled.astype(np.float32)
-    mfrac_test_scaled = mfrac_test_scaled.astype(np.float32)
-
-    # Create Dataset objects and DataLoaders
-    train_dataset = elibs.SPSDataset(x_train_scaled, coef_train_scaled, mfrac_train_scaled)
-    valid_dataset = elibs.SPSDataset(x_valid_scaled, coef_valid_scaled, mfrac_valid_scaled)
-    test_dataset = elibs.SPSDataset(x_test_scaled, coef_test_scaled, mfrac_test_scaled)
-
+    scaler.fit_from_files(
+        filenames=config["Data"]["train_data"],
+        coef_scaling=config["Scaler"]["coef_scaling"],
+        mfrac_scaling=config["Scaler"]["mfrac_scaling"],
+        chunk_size=config["Scaler"].get("chunk_size", 100000),
+        indices=idx_train
+    )
     use_cuda = device.type == "cuda"
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config["DataLoader"]["train_batch_size"],
-        shuffle=config["DataLoader"]["train_shuffle"],
-        num_workers=config["DataLoader"]["train_num_workers"],
-        pin_memory=use_cuda,
-        # persistent_workers=config["DataLoader"]["train_persistent_workers"],
-        persistent_workers=(config["DataLoader"]["train_num_workers"]>0)
-    )
-    valid_loader = DataLoader(
-        valid_dataset,
-        batch_size=config["DataLoader"]["valid_batch_size"],
-        shuffle=config["DataLoader"]["valid_shuffle"],
-        num_workers=config["DataLoader"]["train_num_workers"],
-        pin_memory=use_cuda,
-        # persistent_workers=config["DataLoader"]["train_persistent_workers"],
-        persistent_workers=(config["DataLoader"]["train_num_workers"]>0),
-    )
-    test_loader = DataLoader(
-        test_dataset,
+
+    if not split_valid:
+        train_loader = elibs.make_in_memory_loader(
+            filenames=train_files,
+            scaler=scaler,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            shuffle=config["DataLoader"]["train_shuffle"],
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+        valid_loader = elibs.make_in_memory_loader(
+            filenames=config["Data"]["valid_data"],
+            scaler=scaler,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            # shuffle=config["DataLoader"]["valid_shuffle"],
+            shuffle=False,
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+    else:
+        full_dataset = elibs.make_sps_memory_dataset(filenames=train_files, scaler=scaler)
+        train_loader = elibs.make_in_memory_loader(
+            dataset=full_dataset,
+            indices=idx_train,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            shuffle=config["DataLoader"]["train_shuffle"],
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+        valid_loader = elibs.make_in_memory_loader(
+            dataset=full_dataset,
+            indices=idx_valid,
+            batch_size=config["DataLoader"]["train_batch_size"],
+            # shuffle=config["DataLoader"]["valid_shuffle"],
+            shuffle=False,
+            num_workers=config["DataLoader"]["train_num_workers"],
+            pin_memory=use_cuda,
+        )
+
+    test_loader = elibs.make_in_memory_loader(
+        filenames=config["Data"]["test_data"],
+        scaler=scaler,
         batch_size=config["DataLoader"]["test_batch_size"],
-        shuffle=config["DataLoader"]["test_shuffle"],
+        # shuffle=config["DataLoader"]["test_shuffle"],
+        shuffle=False,
         num_workers=config["DataLoader"]["test_num_workers"],
         pin_memory=use_cuda,
-        # persistent_workers=config["DataLoader"]["test_persistent_workers"],
-        persistent_workers=(config["DataLoader"]["test_num_workers"]>0),
     )
 
     shared_dims = tuple(config["Emulator"]["shared_dims"])
@@ -925,8 +913,8 @@ def main():
     else:
         mfrac_head_dims = ()
 
-    n_features = x_train.shape[1]
-    n_coefs = coef_train.shape[1]
+    n_features = len(scaler.x_mean)
+    n_coefs = pca_modes.shape[0]
 
     # Create emulator model object with config architecture and send to device
     model = elibs.SPSEmulator(
@@ -996,6 +984,16 @@ def main():
         # print(f"Training time", timedelta(seconds=round(train_elapsed_time)))
         print(f"Training time: {format_runtime(train_elapsed_time)}")
 
+
+    # Evaluations with test set
+
+    # first get the test dataset back and get all values in memory
+    test_dataset = test_loader.dataset
+
+    x_test = scaler.inverse_transform_x(test_dataset.x.numpy())
+    coef_test = scaler.inverse_transform_coef(test_dataset.coef.numpy())
+    mfrac_test = scaler.inverse_transform_mfrac(test_dataset.mfrac.numpy())
+
     # prediction with test set
     predictions = elibs.predict_emulator(
         model=model,
@@ -1011,11 +1009,40 @@ def main():
     else:
         mfrac_pred = np.zeros(mfrac_test.shape[0])
 
-    log10_flux_pred = coef_pred @ pca_modes + pca_mean
-    flux_pred = 10.0 ** log10_flux_pred
+    test_batch_size = config["DataLoader"]["test_batch_size"]
 
-    rel_l2_errs = np.linalg.norm(flux_pred-flux_test, axis=1)/np.linalg.norm(flux_test, axis=1)
-    median_ratios = np.median(flux_pred/flux_test, axis=1)
+    rel_l2_errs_list = []
+    median_ratios_list = []
+
+    with h5py.File(config["Data"]["test_data"], "r") as f:
+
+        log10flux_ds = f["log10flux"]
+        n_test = len(log10flux_ds)
+
+        if len(coef_pred) != n_test:
+            raise ValueError("coef_pred and test spectra have different sample counts.")
+
+        for start in range(0, n_test, test_batch_size):
+            end = min(start + test_batch_size, n_test)
+
+            # Read true spectra for this batch
+            log10_flux_test = log10flux_ds[start:end]
+            flux_test = 10.0 ** log10_flux_test
+
+            # Reconstruct predicted spectra for this batch
+            log10_flux_pred = coef_pred[start:end] @ pca_modes + pca_mean
+            flux_pred = 10.0 ** log10_flux_pred
+
+            # Calculate errors
+            rel_l2_errs = (np.linalg.norm(flux_pred - flux_test, axis=1) / np.linalg.norm(flux_test, axis=1))
+            median_ratios = np.median(flux_pred / flux_test, axis=1)
+
+            # Retain only per-object errors
+            rel_l2_errs_list.append(rel_l2_errs)
+            median_ratios_list.append(median_ratios)
+
+    rel_l2_errs = np.concatenate(rel_l2_errs_list)
+    median_ratios = np.concatenate(median_ratios_list)
 
     coefs_rel_l2_errs = np.linalg.norm(coef_pred-coef_test, axis=1)/np.linalg.norm(coef_test, axis=1)
     coef0_ratios = coef_pred[:,0]/coef_test[:,0]

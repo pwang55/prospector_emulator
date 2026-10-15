@@ -18,12 +18,12 @@ DataLoader:
   train_num_workers: 4
   # train_persistent_workers: 2
   train_shuffle: True
-  valid_shuffle: False
+  # valid_shuffle: False
 
   test_batch_size: 2000
   test_num_workers: 2
   # test_persistent_workers: 2
-  test_shuffle: False
+  # test_shuffle: False
 
 Emulator:
   shared_dims: [512, 512, 512, 512]

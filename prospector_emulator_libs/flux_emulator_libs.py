@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset #, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 import json
 # from pathlib import Path
 # import yaml
@@ -9,6 +9,67 @@ import json
 # from scipy.sparse.linalg import eigsh
 import h5py
 import prospector_emulator_libs.emulator_funcs as efuncs
+from pathlib import Path
+
+def make_flux_sps_memory_dataset(filenames, scaler):
+
+    if isinstance(filenames, (str, Path)):
+        filenames = [filenames]
+
+    x_list = []
+    flux_list = []
+    mfrac_list = []
+
+    for filename in filenames:
+        with h5py.File(filename, "r") as f:
+
+            x = scaler.transform_x(f["x"][:])
+            flux = scaler.transform_flux(f["flux_fiducial"][:])
+            mfrac = scaler.transform_mfrac(f["mfrac"][:])
+
+            x_list.append(np.asarray(x, dtype=np.float32))
+            flux_list.append(np.asarray(flux, dtype=np.float32))
+            mfrac_list.append(np.asarray(mfrac, dtype=np.float32))
+
+    return FluxSPSDataset(
+        x_scaled=np.concatenate(x_list, axis=0),
+        flux_scaled=np.concatenate(flux_list, axis=0),
+        mfrac_scaled=np.concatenate(mfrac_list, axis=0),
+    )
+
+def make_in_memory_loader(
+    filenames=None,
+    scaler=None,
+    dataset=None,
+    indices=None,
+    batch_size=2048,
+    shuffle=True,
+    num_workers=0,
+    pin_memory=False,
+):
+    """
+    Create a DataLoader from HDF5 files or an existing Dataset.
+
+    If dataset is provided, filenames and scaler are not needed.
+    """
+
+    if dataset is None:
+        if filenames is None or scaler is None:
+            raise ValueError("Provide either dataset or both filenames and scaler.")
+
+        dataset = make_flux_sps_memory_dataset(filenames=filenames, scaler=scaler)
+
+    if indices is not None:
+        dataset = Subset(dataset, indices)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0),
+    )
 
 # input and output data scaler class
 class FluxEmulatorScaler:
@@ -162,6 +223,305 @@ class FluxEmulatorScaler:
 
         if self.mfrac_std < self.eps and self.mfrac_scaling == 'standard':
             raise ValueError("The standard deviation of mfrac is too small.")
+
+        return self
+
+    def fit_from_files(
+        self,
+        filenames,
+        flux_scaling="standard",
+        mfrac_scaling="standard",
+        chunk_size=100000,
+        indices=None
+    ):
+        """
+        Fit scaler statistics incrementally from one or more HDF5 files.
+
+        Expected HDF5 datasets:
+            x     : (ndata, nfeatures)
+            flux  : (ndata, nfilts), stored in linear flux space
+            mfrac : (ndata,)
+
+        Supported flux scaling:
+            none                  : No scaling
+            standard              : Per-filter mean/std in linear flux
+            global_standard       : Global mean/std in linear flux
+            log10_none            : Log10 transformation only
+            log10_standard        : Per-filter mean/std in log10 flux
+            log10_global_standard : Global mean/std in log10 flux
+
+        All statistics are calculated across all training files.
+        Only one chunk is loaded into memory at a time.
+        """
+
+        import h5py
+        from pathlib import Path
+
+        if isinstance(filenames, (str, Path)):
+            filenames = [filenames]
+
+        if not filenames:
+            raise ValueError("No training files provided.")
+
+        if indices is not None:
+            indices = np.asarray(indices, dtype=np.int64)
+
+            if indices.ndim != 1 or len(indices) == 0:
+                raise ValueError("indices must be a nonempty 1D array.")
+
+            if np.any(indices < 0):
+                raise ValueError("indices must be nonnegative.")
+
+            if np.any(np.diff(indices) <= 0):
+                raise ValueError("indices must be sorted and unique.")
+
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be positive.")
+
+        valid_flux_scalings = {
+            "none",
+            "standard",
+            "global_standard",
+            "log10_none",
+            "log10_standard",
+            "log10_global_standard",
+        }
+        valid_mfrac_scalings = {"none", "standard"}
+
+        if flux_scaling not in valid_flux_scalings:
+            raise ValueError(f"Invalid flux_scaling: {flux_scaling}")
+
+        if mfrac_scaling not in valid_mfrac_scalings:
+            raise ValueError(f"Invalid mfrac_scaling: {mfrac_scaling}")
+
+        self.flux_scaling = flux_scaling
+        self.mfrac_scaling = mfrac_scaling
+
+        log_scaling = flux_scaling.startswith("log10_")
+
+        global_scaling = flux_scaling in {
+            "global_standard",
+            "log10_global_standard",
+        }
+
+        need_flux_stats = flux_scaling not in {
+            "none",
+            "log10_none",
+        }
+
+        # Running statistics
+        n_total = 0
+        n_flux_total = 0
+
+        x_mean = x_M2 = None
+        flux_mean = flux_M2 = None
+        mfrac_mean = mfrac_M2 = None
+
+        nfeatures = None
+        nfilts = None
+
+        def combine_stats(mean, M2, count, chunk_mean, chunk_M2, chunk_count):
+            """
+            Combine running statistics with statistics from a new chunk.
+
+            M2 is the sum of squared deviations from the mean.
+            """
+
+            if count == 0:
+                return chunk_mean, chunk_M2, chunk_count
+
+            new_count = count + chunk_count
+            delta = chunk_mean - mean
+
+            mean = mean + delta * (chunk_count / new_count)
+            M2 = (M2 + chunk_M2 + delta**2 * count * chunk_count / new_count)
+
+            return mean, M2, new_count
+
+        global_offset = 0
+
+        for filename in filenames:
+
+            with h5py.File(filename, "r") as f:
+
+                x_ds = f["x"]
+                flux_ds = f["flux_fiducial"]
+                mfrac_ds = f["mfrac"]
+
+                n_samples = len(x_ds)
+
+                # Validate dimensions
+                if x_ds.ndim != 2:
+                    raise ValueError(f"x must be 2D in {filename}")
+
+                if flux_ds.ndim != 2:
+                    raise ValueError(f"flux must be 2D in {filename}")
+
+                if mfrac_ds.ndim != 1:
+                    raise ValueError(f"mfrac must be 1D in {filename}")
+
+                if len(flux_ds) != n_samples or len(mfrac_ds) != n_samples:
+                    raise ValueError(
+                        f"Inconsistent dataset lengths in {filename}"
+                    )
+
+                # Ensure all files have matching feature/filter dimensions
+                if nfeatures is None:
+                    nfeatures = x_ds.shape[1]
+                    nfilts = flux_ds.shape[1]
+
+                elif (x_ds.shape[1] != nfeatures or flux_ds.shape[1] != nfilts):
+                    raise ValueError(f"Inconsistent feature/filter dimensions in {filename}")
+
+
+                for start in range(0, n_samples, chunk_size):
+
+                    stop = min(start + chunk_size, n_samples)
+                    local_idx = efuncs.get_chunk_indices(indices, global_offset + start, global_offset + stop)
+
+                    if local_idx is not None and len(local_idx) == 0:
+                        continue
+
+                    x = np.asarray(x_ds[start:stop], dtype=np.float64)
+                    flux = np.asarray(flux_ds[start:stop], dtype=np.float64)
+                    mfrac = np.asarray(mfrac_ds[start:stop], dtype=np.float64)
+
+                    if local_idx is not None:
+                        x = x[local_idx]
+                        flux = flux[local_idx]
+                        mfrac = mfrac[local_idx]
+
+                    # Everything below remains unchanged
+                    n = len(x)
+
+                    if n == 0:
+                        continue
+
+                    # Validate finite values
+                    if not (
+                        np.all(np.isfinite(x))
+                        and np.all(np.isfinite(flux))
+                        and np.all(np.isfinite(mfrac))
+                    ):
+                        raise ValueError(f"Nonfinite training data in {filename}")
+
+                    # Convert to log10 space when required
+                    if log_scaling:
+
+                        if np.any(flux <= 0.0):
+                            raise ValueError(
+                                f"Flux must be strictly positive for "
+                                f"flux_scaling='{flux_scaling}' in {filename}"
+                            )
+
+                        flux = np.log10(flux)
+
+                    # ---- Input x: per-feature statistics ----
+
+                    xm = np.mean(x, axis=0)
+                    x2 = np.sum((x - xm)**2, axis=0)
+
+                    x_mean, x_M2, _ = combine_stats(x_mean, x_M2, n_total, xm, x2, n)
+
+                    # ---- mfrac: global statistics ----
+
+                    mm = float(np.mean(mfrac))
+                    m2 = float(np.sum((mfrac - mm)**2))
+
+                    mfrac_mean, mfrac_M2, _ = combine_stats(mfrac_mean, mfrac_M2, n_total, mm, m2, n)
+
+                    n_total += n
+
+                    # ---- Flux statistics ----
+
+                    if need_flux_stats:
+
+                        if global_scaling:
+                            # One mean/std across every sample and filter
+                            fm = float(np.mean(flux))
+                            f2 = float(np.sum((flux - fm)**2))
+                            nf = flux.size
+
+                        else:
+                            # Independent mean/std for each filter
+                            fm = np.mean(flux, axis=0)
+                            f2 = np.sum((flux - fm)**2, axis=0)
+                            nf = n
+
+                        flux_mean, flux_M2, n_flux_total = combine_stats(flux_mean, flux_M2, n_flux_total, fm, f2, nf)
+
+                global_offset += n_samples
+
+        if indices is not None and indices[-1] >= global_offset:
+            raise ValueError("indices contain values outside the dataset.")
+
+        if n_total == 0:
+            raise ValueError("Training files contain no samples.")
+
+        # ---- Final x statistics ----
+
+        self.x_mean = x_mean
+        self.x_std = np.sqrt(
+            np.maximum(x_M2 / n_total, 0.0)
+        )
+
+        constant_features = self.x_std < self.eps
+
+        if np.any(constant_features):
+            indices = np.flatnonzero(constant_features)
+            raise ValueError(
+                f"Input features with nearly zero standard deviation: "
+                f"{indices.tolist()}"
+            )
+
+        # ---- Final flux statistics ----
+
+        if need_flux_stats:
+
+            flux_std = np.sqrt(
+                np.maximum(flux_M2 / n_flux_total, 0.0)
+            )
+
+            if global_scaling:
+
+                self.flux_mean = float(flux_mean)
+                self.flux_std = float(flux_std)
+
+                if self.flux_std < self.eps:
+                    raise ValueError(
+                        "Global flux standard deviation is too small."
+                    )
+
+            else:
+
+                self.flux_mean = flux_mean
+                self.flux_std = flux_std
+
+                bad_filters = self.flux_std < self.eps
+
+                if np.any(bad_filters):
+                    indices = np.flatnonzero(bad_filters)
+                    raise ValueError(
+                        f"Flux filters with nearly zero standard deviation: "
+                        f"{indices.tolist()}"
+                    )
+
+        else:
+
+            self.flux_mean = None
+            self.flux_std = None
+
+        # ---- Final mfrac statistics ----
+
+        self.mfrac_mean = float(mfrac_mean)
+        self.mfrac_std = float(
+            np.sqrt(max(mfrac_M2 / n_total, 0.0))
+        )
+
+        if self.mfrac_std < self.eps and mfrac_scaling == "standard":
+            raise ValueError(
+                "mfrac standard deviation is too small."
+            )
 
         return self
 
@@ -352,6 +712,9 @@ class FluxSPSDataset(Dataset):
         if self.flux.shape[0] != ndata:
             raise ValueError("x and c have different ndata")
 
+        if self.mfrac.shape[0] != ndata:
+            raise ValueError("x and mfrac have different ndata")
+        
     def __len__(self):
         return self.x.shape[0]
 
