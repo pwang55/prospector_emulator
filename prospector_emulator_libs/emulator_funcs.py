@@ -119,7 +119,7 @@ def load_data(filename):
             coef = dat["coef"][()]
             flux_fiducial = dat["flux_fiducial"][()]
             mfrac = dat["mfrac"][()]
-            scale = dat["scale"][()]
+            # scale = dat["scale"][()]
             train_param_keys = dat.attrs["train_param_keys"].tolist()
             default_params = json.loads(dat.attrs["default_params"])
             prior_dicts = json.loads(dat.attrs["prior_dicts"])
@@ -135,7 +135,7 @@ def load_data(filename):
             "mfrac": mfrac,
             "flux": flux,
             "flux_fiducial": flux_fiducial,
-            "scale": scale,
+            # "scale": scale,
             "train_param_keys": train_param_keys,
             "default_params": default_params,
             "prior_dicts": prior_dicts

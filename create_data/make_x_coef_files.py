@@ -41,6 +41,41 @@ def parse_args():
     )
     return parser.parse_args()
 
+def interpolate_nonpositive_flux(flux, wavelength):
+    """
+    Replace nonpositive flux values through linear interpolation
+    along the wavelength axis.
+
+    Parameters
+    ----------
+    flux : ndarray, shape (ndata, nfilters)
+        Linear flux values.
+    wavelength : ndarray, shape (nfilters,)
+        Corresponding filter wavelengths.
+
+    Returns
+    -------
+    flux : ndarray
+        Flux with nonpositive values interpolated.
+    """
+    flux = np.array(flux, copy=True)
+    wavelength = np.asarray(wavelength)
+
+    for i in range(len(flux)):
+        bad = flux[i] <= 0
+
+        if not np.any(bad):
+            continue
+
+        good = ~bad
+
+        if np.count_nonzero(good) == 0:
+            raise ValueError(f"Spectrum {i} has no positive flux values.")
+
+        flux[i, bad] = np.interp(wavelength[bad], wavelength[good], flux[i, good])
+
+    return flux
+
 # def load_config(filename):
 args = parse_args()
 config_filename = args.config
@@ -99,7 +134,6 @@ for i, filename in enumerate(train_log10flux_filenames):
 train_log10flux_sum = np.empty((nlbs))
 Cov = np.empty((nlbs, nlbs))
 
-# TODO scaling?
 # print("Calculating PCA modes and mean...")
 # batch read training file and build PCA
 # first iteration pass to get the mean log10flux
@@ -232,15 +266,15 @@ with h5py.File(output_dir / out_train_filename, "w") as f_out:
         compression_opts=4,
         shuffle=True
     )
-    dset_scale = f_out.create_dataset(
-        "scale",
-        shape=ntrain_total,
-        dtype=np.float32,
-        chunks=batch_size,
-        compression="gzip",
-        compression_opts=4,
-        shuffle=True
-    )
+    # dset_scale = f_out.create_dataset(
+    #     "scale",
+    #     shape=ntrain_total,
+    #     dtype=np.float32,
+    #     chunks=batch_size,
+    #     compression="gzip",
+    #     compression_opts=4,
+    #     shuffle=True
+    # )
     global_start = 0
     # iterate over input training file to calculate the coefficients
     for i, filename in enumerate(train_log10flux_filenames):
@@ -263,17 +297,17 @@ with h5py.File(output_dir / out_train_filename, "w") as f_out:
                 end = np.min((start+batch_size, ntrain))
 
                 train_log10flux_chunk = train_log10flux[start:end]
-                # TODO scaling?
                 coef_train = (train_log10flux_chunk - pca_mean) @ pca_modes.T
 
                 out_start = global_start + start
                 out_end = out_start + end - start
 
+                flux_fiducial_chunk = interpolate_nonpositive_flux(flux_fiducial[start:end], lamb_obs)
+
                 dset_coef[out_start:out_end] = coef_train
                 dset_x[out_start:out_end] = x[start:end]
-                dset_flux_fiducial[out_start:out_end] = flux_fiducial[start:end]
+                dset_flux_fiducial[out_start:out_end] = flux_fiducial_chunk
                 dset_mfrac[out_start:out_end] = mfrac[start:end]
-                dset_scale[out_start:out_end] = np.ones(end-start)  # TODO
 
             global_start += ntrain
 
@@ -340,24 +374,24 @@ with h5py.File(output_dir / out_valid_filename, "w") as f_out:
         compression_opts=4,
         shuffle=True
     )
-    dset_scale = f_out.create_dataset(
-        "scale",
-        shape=nvalid_total,
-        dtype=np.float32,
-        chunks=batch_size,
-        compression="gzip",
-        compression_opts=4,
-        shuffle=True
-    )
-    dset_log10flux = f_out.create_dataset(
-        "log10flux",
-        shape=(nvalid_total, nlbs),
-        dtype=np.float32,
-        chunks=(batch_size, nlbs),
-        compression="gzip",
-        compression_opts=4,
-        shuffle=True
-    )
+    # dset_scale = f_out.create_dataset(
+    #     "scale",
+    #     shape=nvalid_total,
+    #     dtype=np.float32,
+    #     chunks=batch_size,
+    #     compression="gzip",
+    #     compression_opts=4,
+    #     shuffle=True
+    # )
+    # dset_log10flux = f_out.create_dataset(
+    #     "log10flux",
+    #     shape=(nvalid_total, nlbs),
+    #     dtype=np.float32,
+    #     chunks=(batch_size, nlbs),
+    #     compression="gzip",
+    #     compression_opts=4,
+    #     shuffle=True
+    # )
     global_start = 0
     # iterate over input valid file to calculate the coefficients
     for i, filename in enumerate(valid_log10flux_filenames):
@@ -381,18 +415,18 @@ with h5py.File(output_dir / out_valid_filename, "w") as f_out:
                 end = np.min((start+batch_size, nvalid))
 
                 valid_log10flux_chunk = valid_log10flux[start:end]
-                # TODO scaling?
                 coef_valid = (valid_log10flux_chunk - pca_mean) @ pca_modes.T
 
                 out_start = global_start + start
                 out_end = out_start + end - start
 
-                dset_log10flux[out_start:out_end] = valid_log10flux_chunk
+                flux_fiducial_chunk = interpolate_nonpositive_flux(flux_fiducial[start:end], lamb_obs)
+
+                # dset_log10flux[out_start:out_end] = valid_log10flux_chunk
                 dset_coef[out_start:out_end] = coef_valid
                 dset_x[out_start:out_end] = x[start:end]
-                dset_flux_fiducial[out_start:out_end] = flux_fiducial[start:end]
+                dset_flux_fiducial[out_start:out_end] = flux_fiducial_chunk
                 dset_mfrac[out_start:out_end] = mfrac[start:end]
-                dset_scale[out_start:out_end] = np.ones(end-start)  # TODO
 
             global_start += nvalid
 
@@ -460,15 +494,15 @@ with h5py.File(output_dir / out_test_filename, "w") as f_out:
         compression_opts=4,
         shuffle=True
     )
-    dset_scale = f_out.create_dataset(
-        "scale",
-        shape=ntest_total,
-        dtype=np.float32,
-        chunks=batch_size,
-        compression="gzip",
-        compression_opts=4,
-        shuffle=True
-    )
+    # dset_scale = f_out.create_dataset(
+    #     "scale",
+    #     shape=ntest_total,
+    #     dtype=np.float32,
+    #     chunks=batch_size,
+    #     compression="gzip",
+    #     compression_opts=4,
+    #     shuffle=True
+    # )
     dset_log10flux = f_out.create_dataset(
         "log10flux",
         shape=(ntest_total, nlbs),
@@ -500,18 +534,19 @@ with h5py.File(output_dir / out_test_filename, "w") as f_out:
                 end = np.min((start+batch_size, ntest))
 
                 test_log10flux_chunk = test_log10flux[start:end]
-                # TODO scaling?
                 coef_test = (test_log10flux_chunk - pca_mean) @ pca_modes.T
 
                 out_start = global_start + start
                 out_end = out_start + end - start
 
+                flux_fiducial_chunk = interpolate_nonpositive_flux(flux_fiducial[start:end], lamb_obs)
+
                 dset_log10flux[out_start:out_end] = test_log10flux_chunk
                 dset_coef[out_start:out_end] = coef_test
                 dset_x[out_start:out_end] = x[start:end]
-                dset_flux_fiducial[out_start:out_end] = flux_fiducial[start:end]
+                dset_flux_fiducial[out_start:out_end] = flux_fiducial_chunk
                 dset_mfrac[out_start:out_end] = mfrac[start:end]
-                dset_scale[out_start:out_end] = np.ones(end-start)  # TODO
+
 
             global_start += ntest
 
