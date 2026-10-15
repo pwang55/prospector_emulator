@@ -333,7 +333,7 @@ class custom_prospector:
         Using a given myparams or a model_params to create spectra using Prospector
 
     """
-    def __init__(self, sfh_type='continuity_sfh', filters=None, zcontinuous=2, pmetal=-1.0):
+    def __init__(self, sfh_type='continuity_sfh', filters=None, zcontinuous=1):
         self.sfh_type = sfh_type
 
         # some pre-fixed parameters
@@ -342,10 +342,10 @@ class custom_prospector:
         
         # depending on sfh_type, create the basis sps object from fsps
         if self.sfh_type == 'parametric_sfh':
-            self.sps = CSPSpecBasis(zcontinuous=zcontinuous, pmetal=pmetal)
+            self.sps = CSPSpecBasis(zcontinuous=zcontinuous)
             self.sfh_init = 5
         elif self.sfh_type == 'continuity_sfh':
-            self.sps = FastStepBasis(zcontinuous=zcontinuous, pmetal=pmetal)
+            self.sps = FastStepBasis(zcontinuous=zcontinuous)
             self.sfh_init = 3
 
         self.model_params = TemplateLibrary[sfh_type]
